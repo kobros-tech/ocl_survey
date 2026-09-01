@@ -1,0 +1,11 @@
+defaults:
+  - method_defaults.yaml
+
+name: skill_memory
+
+# Skill Memory is a native OCL Survey strategy. It uses the same benchmark,
+# optimizer, evaluation and result logging pipeline as the other methods.
+max_skills: 20
+probe_samples: 64
+reuse_threshold: 0.90
+clone_threshold: 0.30

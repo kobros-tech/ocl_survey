@@ -3,5 +3,5 @@ batch_size_mem: null
 train_mb_size: 10
 eval_mb_size: 128
 train_epochs: 3
-device: cuda
-use_task_boundaries: false
+device: cpu
+use_task_boundaries: true
