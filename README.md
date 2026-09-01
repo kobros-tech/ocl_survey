@@ -14,10 +14,10 @@ Clone this repository
 git clone https://github.com/AlbinSou/ocl_survey.git
 ```
 
-Create a new environment with python 3.10
+Create a new environment with python 3.11
 
 ```
-conda create -n ocl_survey python=3.10
+conda create -n ocl_survey python=3.11
 conda activate ocl_survey
 ```
 

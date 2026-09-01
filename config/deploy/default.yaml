@@ -1,7 +1,6 @@
 # @package _global_
 
 experiment:
-  results_root: ../results
-
-benchmark:
-  dataset_root: /DATA/data
+  # Keep experiment outputs inside the repository regardless of Hydra's
+  # working-directory behavior.
+  results_root: ${hydra:runtime.cwd}/results

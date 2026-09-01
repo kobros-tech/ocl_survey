@@ -1,19 +1,16 @@
 #!/usr/bin/env python3
-import argparse
 import os
 
 import hydra
-import numpy as np
 import omegaconf
-import ray
 import torch
 
-import avalanche.benchmarks.scenarios as scenarios
 import src.factories.benchmark_factory as benchmark_factory
 import src.factories.method_factory as method_factory
 import src.factories.model_factory as model_factory
 import src.toolkit.utils as utils
-from avalanche.benchmarks.scenarios import OnlineCLScenario
+from avalanche.benchmarks import with_classes_timeline
+from avalanche.benchmarks.scenarios.online import split_online_stream
 from src.factories.benchmark_factory import DS_SIZES
 
 
@@ -92,18 +89,22 @@ def main(config):
     print("Using strategy: ", strategy.__class__.__name__)
     print("With plugins: ", strategy.plugins)
 
-    batch_streams = scenario.streams.values()
     for t, experience in enumerate(scenario.train_stream):
         if config.experiment.train_online:
-            ocl_scenario = OnlineCLScenario(
-                original_streams=batch_streams,
-                experiences=experience,
+            # Avalanche 0.6's online splitter returns OnlineCLExperience,
+            # which intentionally strips classification decorators. Restore
+            # the classes timeline before handing the stream to the strategy,
+            # since IncrementalClassifier relies on classes_in_this_experience.
+            train_stream = split_online_stream(
+                [experience],
                 experience_size=config.strategy.train_mb_size,
+                shuffle=True,
+                drop_last=False,
                 access_task_boundaries=config.strategy.use_task_boundaries,
             )
-            train_stream = ocl_scenario.train_stream
+            train_stream = with_classes_timeline(train_stream)
         else:
-            train_stream = experience
+            train_stream = [experience]
 
         strategy.train(
             train_stream,
