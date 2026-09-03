@@ -1672,7 +1672,7 @@ Epoch 2 ended.
 	Loss_Exp/eval_phase/test_stream/Task000/Exp000 = 2.1879
 	Top1_Acc_Exp/eval_phase/test_stream/Task000/Exp000 = 0.2720
 	mb_index = 238
-	time = 39.6803
+	time = 37.3526
 -- >> End of eval phase << --
 	CumulativeAccuracy/eval_phase/test_stream/Exp000 = 0.2720
 	Loss_Stream/eval_phase/test_stream/Task000 = 2.1879
@@ -3351,7 +3351,7 @@ Epoch 2 ended.
 	Loss_Exp/eval_phase/test_stream/Task000/Exp000 = 5.0002
 	Top1_Acc_Exp/eval_phase/test_stream/Task000/Exp000 = 0.0000
 	mb_index = 476
-	time = 80.8742
+	time = 75.7256
 -- Starting eval on experience 1 (Task 0) from test stream --
 > Eval on experience 1 (Task 0) from test stream ended.
 	Loss_Exp/eval_phase/test_stream/Task000/Exp001 = 0.9921
@@ -5035,7 +5035,7 @@ Epoch 2 ended.
 	Loss_Exp/eval_phase/test_stream/Task000/Exp000 = 5.0036
 	Top1_Acc_Exp/eval_phase/test_stream/Task000/Exp000 = 0.0000
 	mb_index = 714
-	time = 123.9025
+	time = 116.1552
 -- Starting eval on experience 1 (Task 0) from test stream --
 > Eval on experience 1 (Task 0) from test stream ended.
 	Loss_Exp/eval_phase/test_stream/Task000/Exp001 = 1003.8545
@@ -6724,7 +6724,7 @@ Epoch 2 ended.
 	Loss_Exp/eval_phase/test_stream/Task000/Exp000 = 5.1617
 	Top1_Acc_Exp/eval_phase/test_stream/Task000/Exp000 = 0.0000
 	mb_index = 952
-	time = 169.8450
+	time = 157.4366
 -- Starting eval on experience 1 (Task 0) from test stream --
 > Eval on experience 1 (Task 0) from test stream ended.
 	Loss_Exp/eval_phase/test_stream/Task000/Exp001 = 1003.9582
@@ -8418,7 +8418,7 @@ Epoch 2 ended.
 	Loss_Exp/eval_phase/test_stream/Task000/Exp000 = 9.2661
 	Top1_Acc_Exp/eval_phase/test_stream/Task000/Exp000 = 0.0000
 	mb_index = 1190
-	time = 216.9164
+	time = 201.3949
 -- Starting eval on experience 1 (Task 0) from test stream --
 > Eval on experience 1 (Task 0) from test stream ended.
 	Loss_Exp/eval_phase/test_stream/Task000/Exp001 = 1007.8419
@@ -10117,7 +10117,7 @@ Epoch 2 ended.
 	Loss_Exp/eval_phase/test_stream/Task000/Exp000 = 10.6715
 	Top1_Acc_Exp/eval_phase/test_stream/Task000/Exp000 = 0.0000
 	mb_index = 1428
-	time = 267.1791
+	time = 259.1657
 -- Starting eval on experience 1 (Task 0) from test stream --
 > Eval on experience 1 (Task 0) from test stream ended.
 	Loss_Exp/eval_phase/test_stream/Task000/Exp001 = 1008.8676
@@ -11821,7 +11821,7 @@ Epoch 2 ended.
 	Loss_Exp/eval_phase/test_stream/Task000/Exp000 = 4.9369
 	Top1_Acc_Exp/eval_phase/test_stream/Task000/Exp000 = 0.0000
 	mb_index = 1666
-	time = 316.0093
+	time = 306.5623
 -- Starting eval on experience 1 (Task 0) from test stream --
 > Eval on experience 1 (Task 0) from test stream ended.
 	Loss_Exp/eval_phase/test_stream/Task000/Exp001 = 1004.0994
@@ -13530,7 +13530,7 @@ Epoch 2 ended.
 	Loss_Exp/eval_phase/test_stream/Task000/Exp000 = 11.1046
 	Top1_Acc_Exp/eval_phase/test_stream/Task000/Exp000 = 0.0000
 	mb_index = 1904
-	time = 366.5032
+	time = 358.6739
 -- Starting eval on experience 1 (Task 0) from test stream --
 > Eval on experience 1 (Task 0) from test stream ended.
 	Loss_Exp/eval_phase/test_stream/Task000/Exp001 = 1008.6781
@@ -15244,7 +15244,7 @@ Epoch 2 ended.
 	Loss_Exp/eval_phase/test_stream/Task000/Exp000 = 9.4937
 	Top1_Acc_Exp/eval_phase/test_stream/Task000/Exp000 = 0.0000
 	mb_index = 2142
-	time = 419.8955
+	time = 412.8459
 -- Starting eval on experience 1 (Task 0) from test stream --
 > Eval on experience 1 (Task 0) from test stream ended.
 	Loss_Exp/eval_phase/test_stream/Task000/Exp001 = 1008.5508
@@ -16963,7 +16963,7 @@ Epoch 2 ended.
 	Loss_Exp/eval_phase/test_stream/Task000/Exp000 = 4.6628
 	Top1_Acc_Exp/eval_phase/test_stream/Task000/Exp000 = 0.0000
 	mb_index = 2380
-	time = 473.2441
+	time = 470.6047
 -- Starting eval on experience 1 (Task 0) from test stream --
 > Eval on experience 1 (Task 0) from test stream ended.
 	Loss_Exp/eval_phase/test_stream/Task000/Exp001 = 1003.6997
@@ -18687,7 +18687,7 @@ Epoch 2 ended.
 	Loss_Exp/eval_phase/test_stream/Task000/Exp000 = 10.1527
 	Top1_Acc_Exp/eval_phase/test_stream/Task000/Exp000 = 0.0000
 	mb_index = 2618
-	time = 527.0983
+	time = 534.1250
 -- Starting eval on experience 1 (Task 0) from test stream --
 > Eval on experience 1 (Task 0) from test stream ended.
 	Loss_Exp/eval_phase/test_stream/Task000/Exp001 = 1007.6983
@@ -20416,7 +20416,7 @@ Epoch 2 ended.
 	Loss_Exp/eval_phase/test_stream/Task000/Exp000 = 5.7156
 	Top1_Acc_Exp/eval_phase/test_stream/Task000/Exp000 = 0.0000
 	mb_index = 2856
-	time = 583.7074
+	time = 597.2402
 -- Starting eval on experience 1 (Task 0) from test stream --
 > Eval on experience 1 (Task 0) from test stream ended.
 	Loss_Exp/eval_phase/test_stream/Task000/Exp001 = 1004.1980
@@ -22150,7 +22150,7 @@ Epoch 2 ended.
 	Loss_Exp/eval_phase/test_stream/Task000/Exp000 = 4.3124
 	Top1_Acc_Exp/eval_phase/test_stream/Task000/Exp000 = 0.0000
 	mb_index = 3094
-	time = 640.7015
+	time = 661.0588
 -- Starting eval on experience 1 (Task 0) from test stream --
 > Eval on experience 1 (Task 0) from test stream ended.
 	Loss_Exp/eval_phase/test_stream/Task000/Exp001 = 1003.1436
@@ -23889,7 +23889,7 @@ Epoch 2 ended.
 	Loss_Exp/eval_phase/test_stream/Task000/Exp000 = 10.7221
 	Top1_Acc_Exp/eval_phase/test_stream/Task000/Exp000 = 0.0000
 	mb_index = 3332
-	time = 700.1542
+	time = 728.3229
 -- Starting eval on experience 1 (Task 0) from test stream --
 > Eval on experience 1 (Task 0) from test stream ended.
 	Loss_Exp/eval_phase/test_stream/Task000/Exp001 = 1009.0858
@@ -25633,7 +25633,7 @@ Epoch 2 ended.
 	Loss_Exp/eval_phase/test_stream/Task000/Exp000 = 5.2249
 	Top1_Acc_Exp/eval_phase/test_stream/Task000/Exp000 = 0.0000
 	mb_index = 3570
-	time = 758.1211
+	time = 794.4215
 -- Starting eval on experience 1 (Task 0) from test stream --
 > Eval on experience 1 (Task 0) from test stream ended.
 	Loss_Exp/eval_phase/test_stream/Task000/Exp001 = 1004.1183
@@ -27382,7 +27382,7 @@ Epoch 2 ended.
 	Loss_Exp/eval_phase/test_stream/Task000/Exp000 = 6.2317
 	Top1_Acc_Exp/eval_phase/test_stream/Task000/Exp000 = 0.0000
 	mb_index = 3808
-	time = 816.8563
+	time = 869.4368
 -- Starting eval on experience 1 (Task 0) from test stream --
 > Eval on experience 1 (Task 0) from test stream ended.
 	Loss_Exp/eval_phase/test_stream/Task000/Exp001 = 1004.6930
@@ -29136,7 +29136,7 @@ Epoch 2 ended.
 	Loss_Exp/eval_phase/test_stream/Task000/Exp000 = 6.6099
 	Top1_Acc_Exp/eval_phase/test_stream/Task000/Exp000 = 0.0000
 	mb_index = 4046
-	time = 877.1839
+	time = 945.9533
 -- Starting eval on experience 1 (Task 0) from test stream --
 > Eval on experience 1 (Task 0) from test stream ended.
 	Loss_Exp/eval_phase/test_stream/Task000/Exp001 = 1005.3246
@@ -30895,7 +30895,7 @@ Epoch 2 ended.
 	Loss_Exp/eval_phase/test_stream/Task000/Exp000 = 11.7294
 	Top1_Acc_Exp/eval_phase/test_stream/Task000/Exp000 = 0.0000
 	mb_index = 4284
-	time = 937.8912
+	time = 1027.6975
 -- Starting eval on experience 1 (Task 0) from test stream --
 > Eval on experience 1 (Task 0) from test stream ended.
 	Loss_Exp/eval_phase/test_stream/Task000/Exp001 = 1010.3287
@@ -32659,7 +32659,7 @@ Epoch 2 ended.
 	Loss_Exp/eval_phase/test_stream/Task000/Exp000 = 5.5810
 	Top1_Acc_Exp/eval_phase/test_stream/Task000/Exp000 = 0.0000
 	mb_index = 4522
-	time = 999.2648
+	time = 1108.9898
 -- Starting eval on experience 1 (Task 0) from test stream --
 > Eval on experience 1 (Task 0) from test stream ended.
 	Loss_Exp/eval_phase/test_stream/Task000/Exp001 = 1004.3856
@@ -34428,7 +34428,7 @@ Epoch 2 ended.
 	Loss_Exp/eval_phase/test_stream/Task000/Exp000 = 11.7703
 	Top1_Acc_Exp/eval_phase/test_stream/Task000/Exp000 = 0.0000
 	mb_index = 4760
-	time = 1069.3339
+	time = 1191.1966
 -- Starting eval on experience 1 (Task 0) from test stream --
 > Eval on experience 1 (Task 0) from test stream ended.
 	Loss_Exp/eval_phase/test_stream/Task000/Exp001 = 1009.7742
