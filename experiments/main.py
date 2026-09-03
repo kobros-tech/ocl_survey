@@ -18,6 +18,20 @@ from src.factories.benchmark_factory import DS_SIZES
 def main(config):
     utils.set_seed(config.experiment.seed)
 
+    # Keep the experiment portable across local CPU runs and GPU-backed
+    # environments such as Google Colab. Explicit device values are preserved;
+    # only the "auto" setting is resolved here at runtime.
+    configured_device = str(config.strategy.device).lower()
+    if configured_device == "auto":
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+        config.strategy.device = device
+    else:
+        device = str(config.strategy.device)
+
+    print(f"Using device: {device}")
+    if device == "cuda":
+        print(f"CUDA device: {torch.cuda.get_device_name(0)}")
+
     plugins = []
 
     scenario = benchmark_factory.create_benchmark(
