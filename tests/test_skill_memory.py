@@ -24,7 +24,6 @@ def test_memory_stores_independent_cpu_copy():
     memory = SkillMemory(max_skills=2)
     source = {"weight": torch.tensor([[1.0, 2.0]])}
     memory.register("a", source)
-
     source["weight"].fill_(9.0)
     assert torch.equal(memory._records["a"].state_dict["weight"], torch.tensor([[1.0, 2.0]]))
     assert memory._records["a"].state_dict["weight"].device.type == "cpu"
@@ -35,7 +34,6 @@ def test_memory_record_is_independent_after_source_mutation():
     source = {"weight": torch.tensor([[1.0]])}
     memory.register("a", source)
     stored = memory._records["a"].state_dict["weight"]
-
     source["weight"].add_(10.0)
     assert torch.equal(source["weight"], torch.tensor([[11.0]]))
     assert torch.equal(stored, torch.tensor([[1.0]]))
@@ -50,13 +48,7 @@ def test_memory_capacity_is_bounded():
 
 def test_memory_storage_bytes_accounts_for_tensor_storage():
     memory = SkillMemory(max_skills=2)
-    memory.register(
-        "a",
-        {
-            "weight": torch.ones(2, dtype=torch.float32),
-            "bias": torch.ones(1, dtype=torch.float32),
-        },
-    )
+    memory.register("a", {"weight": torch.ones(2, dtype=torch.float32), "bias": torch.ones(1, dtype=torch.float32)})
     assert memory.storage_bytes == 12
 
 
@@ -84,11 +76,9 @@ def test_optimizer_is_rebound_to_current_model_parameters():
     model = nn.Sequential(nn.Linear(2, 2))
     strategy = DummyStrategy(model)
     plugin = SkillMemoryPlugin()
-
     old_parameters = list(strategy.optimizer.param_groups[0]["params"])
     model[0] = nn.Linear(2, 3)
     plugin._reset_optimizer(strategy)
-
     new_parameters = list(model.parameters())
     assert list(strategy.optimizer.param_groups[0]["params"]) == new_parameters
     assert all(not any(old is new for new in new_parameters) for old in old_parameters)
@@ -100,7 +90,6 @@ def test_optimizer_rebinding_requires_single_parameter_group():
     strategy = DummyStrategy(model)
     strategy.optimizer.add_param_group({"params": [model[0].bias]})
     plugin = SkillMemoryPlugin()
-
     with pytest.raises(RuntimeError, match="exactly one optimizer parameter group"):
         plugin._reset_optimizer(strategy)
 
@@ -118,7 +107,6 @@ def test_threshold_order_is_validated():
 def test_probe_is_deterministic_for_same_seed():
     experience = DummyExperience(0)
     experience.dataset = [(torch.tensor([float(i)]), i) for i in range(10)]
-
     x1, y1 = make_probe(experience, samples=5, seed=123)
     x2, y2 = make_probe(experience, samples=5, seed=123)
     assert torch.equal(x1, x2)
@@ -128,29 +116,23 @@ def test_probe_is_deterministic_for_same_seed():
 def test_probe_changes_with_seed():
     experience = DummyExperience(0)
     experience.dataset = [(torch.tensor([float(i)]), i) for i in range(10)]
-
     _, y1 = make_probe(experience, samples=5, seed=123)
     _, y2 = make_probe(experience, samples=5, seed=456)
     assert not torch.equal(y1, y2)
 
 
 def test_scratch_restores_initial_model_state(monkeypatch):
-    monkeypatch.setattr(
-        "src.strategies.skill_memory.avalanche_model_adaptation",
-        lambda *_args, **_kwargs: None,
-    )
+    monkeypatch.setattr("src.strategies.skill_memory.avalanche_model_adaptation", lambda *_args, **_kwargs: None)
     model = nn.Linear(2, 2)
     strategy = DummyStrategy(model)
     initial = {k: v.detach().clone() for k, v in model.state_dict().items()}
     plugin = SkillMemoryPlugin(force_decision=SkillMemoryPlugin.SCRATCH)
-
     strategy.experience = DummyExperience(0)
     plugin.before_training_exp(strategy)
     with torch.no_grad():
         model.weight.fill_(9.0)
         model.bias.fill_(9.0)
     plugin.after_training_exp(strategy)
-
     plugin.before_training_exp(strategy)
     assert torch.equal(model.weight, initial["weight"])
     assert torch.equal(model.bias, initial["bias"])
@@ -158,19 +140,14 @@ def test_scratch_restores_initial_model_state(monkeypatch):
 
 
 def test_clone_loads_skill_and_keeps_training_budget(monkeypatch):
-    monkeypatch.setattr(
-        "src.strategies.skill_memory.avalanche_model_adaptation",
-        lambda *_args, **_kwargs: None,
-    )
+    monkeypatch.setattr("src.strategies.skill_memory.avalanche_model_adaptation", lambda *_args, **_kwargs: None)
     model = nn.Linear(2, 2)
     strategy = DummyStrategy(model)
-    plugin = SkillMemoryPlugin(force_decision=SkillMemoryPlugin.CLONE)
+    plugin = SkillMemoryPlugin(force_decision=SkillMemoryPlugin.CLONE, compatibility=lambda *_: 0.5)
     stored = {k: torch.full_like(v, 3.0) for k, v in model.state_dict().items()}
     plugin.memory.register("skill-0", stored)
-
     strategy.experience = DummyExperience(1)
     plugin.before_training_exp(strategy)
-
     assert torch.equal(model.weight, stored["weight"])
     assert torch.equal(model.bias, stored["bias"])
     assert strategy.train_epochs == 2
@@ -179,47 +156,36 @@ def test_clone_loads_skill_and_keeps_training_budget(monkeypatch):
 
 
 def test_reuse_loads_skill_and_skips_training_then_restores_budget(monkeypatch):
-    monkeypatch.setattr(
-        "src.strategies.skill_memory.avalanche_model_adaptation",
-        lambda *_args, **_kwargs: None,
-    )
+    monkeypatch.setattr("src.strategies.skill_memory.avalanche_model_adaptation", lambda *_args, **_kwargs: None)
     model = nn.Linear(2, 2)
     strategy = DummyStrategy(model)
-    plugin = SkillMemoryPlugin(force_decision=SkillMemoryPlugin.REUSE)
+    plugin = SkillMemoryPlugin(force_decision=SkillMemoryPlugin.REUSE, compatibility=lambda *_: 0.5)
     stored = {k: torch.full_like(v, 4.0) for k, v in model.state_dict().items()}
     plugin.memory.register("skill-0", stored)
-
     strategy.experience = DummyExperience(1)
     plugin.before_training_exp(strategy)
-
     assert torch.equal(model.weight, stored["weight"])
     assert torch.equal(model.bias, stored["bias"])
     assert strategy.train_epochs == 0
     assert plugin.last_decision == SkillMemoryPlugin.REUSE
-
     plugin.after_training_exp(strategy)
     assert strategy.train_epochs == 2
 
 
 def test_decision_audit_records_action_and_resource_usage(monkeypatch):
-    monkeypatch.setattr(
-        "src.strategies.skill_memory.avalanche_model_adaptation",
-        lambda *_args, **_kwargs: None,
-    )
+    monkeypatch.setattr("src.strategies.skill_memory.avalanche_model_adaptation", lambda *_args, **_kwargs: None)
     model = nn.Linear(2, 2)
     strategy = DummyStrategy(model)
-    plugin = SkillMemoryPlugin(force_decision=SkillMemoryPlugin.CLONE)
+    plugin = SkillMemoryPlugin(force_decision=SkillMemoryPlugin.CLONE, compatibility=lambda *_: 0.5)
     stored = {k: torch.full_like(v, 3.0) for k, v in model.state_dict().items()}
     plugin.memory.register("skill-0", stored)
-
     strategy.experience = DummyExperience(1)
     plugin.before_training_exp(strategy)
-
     assert len(plugin.audit_log) == 1
     event = plugin.audit_log[0]
     assert event["experience"] == 1
     assert event["decision"] == SkillMemoryPlugin.CLONE
     assert event["selected_skill"] == "skill-0"
-    assert event["compatibility_score"] == pytest.approx(0.0)
+    assert event["compatibility_score"] == pytest.approx(0.5)
     assert event["memory_skills"] == 1
     assert event["memory_storage_bytes"] == sum(t.numel() * t.element_size() for t in stored.values())
