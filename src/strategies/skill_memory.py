@@ -42,6 +42,15 @@ class SkillMemory:
     def __len__(self):
         return len(self._records)
 
+    @property
+    def storage_bytes(self) -> int:
+        """Number of bytes occupied by stored model tensors."""
+        return sum(
+            tensor.numel() * tensor.element_size()
+            for record in self._records.values()
+            for tensor in record.state_dict.values()
+        )
+
     def best_match(self, query, scorer: Callable[[SkillRecord, Any], float]):
         if not self._records or scorer is None:
             return None, 0.0
@@ -160,6 +169,7 @@ def make_probe(experience, samples=64, seed=0):
 def make_compatibility(model_factory, num_classes, probe_samples=64, probe_seed=0):
     return ProbeCompatibilityScorer(
         model_factory=model_factory,
+        num_classes=num_classes,
         loss_fn=nn.functional.cross_entropy,
         probe_fn=lambda exp: make_probe(exp, probe_samples, seed=probe_seed),
         reference_fn=lambda _y: float(torch.log(torch.tensor(float(num_classes))).item()),
@@ -194,6 +204,27 @@ class SkillMemoryPlugin(SupervisedPlugin):
         self._initial_state = None
         self._saved_train_epochs = None
         self._task_active = False
+        self._audit_log: list[dict[str, Any]] = []
+
+    @property
+    def audit_log(self) -> list[dict[str, Any]]:
+        """Return decision records without exposing mutable internal entries."""
+        return [dict(entry) for entry in self._audit_log]
+
+    def _record_decision(self, experience, decision, record, score):
+        self._audit_log.append({
+            "experience": getattr(
+                getattr(experience, "origin_experience", None),
+                "current_experience",
+                experience.current_experience,
+            ),
+            "decision": decision,
+            "selected_skill": record.name if record is not None else None,
+            "compatibility_score": float(score),
+            "memory_skills": len(self.memory),
+            "memory_storage_bytes": self.memory.storage_bytes,
+            "probe_samples": getattr(self.compatibility, "probe_samples", None),
+        })
 
     def _reset_optimizer(self, strategy):
         """Rebind optimizer parameters after a dynamic module replacement.
@@ -253,6 +284,7 @@ class SkillMemoryPlugin(SupervisedPlugin):
 
         if len(self.memory) == 0:
             self._scratch(strategy)
+            self._record_decision(experience, self.SCRATCH, None, 0.0)
             return
 
         record, score = self.memory.best_match(experience, self.compatibility)
@@ -283,6 +315,8 @@ class SkillMemoryPlugin(SupervisedPlugin):
         else:
             self._scratch(strategy)
             self.last_decision = self.SCRATCH
+
+        self._record_decision(experience, self.last_decision, record, score)
 
     def after_training_exp(self, strategy, **kwargs):
         experience = strategy.experience
