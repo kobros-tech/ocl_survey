@@ -145,18 +145,23 @@ class ProbeCompatibilityScorer:
         return max(0.0, min(1.0, 1.0 - loss / reference))
 
 
-def make_probe(experience, samples=64):
+def make_probe(experience, samples=64, seed=0):
+    """Build a deterministic probe from the current training experience only."""
     n = min(samples, len(experience.dataset))
-    loader = DataLoader(experience.dataset, batch_size=n, shuffle=False)
+    generator = torch.Generator()
+    generator.manual_seed(seed)
+    indices = torch.randperm(len(experience.dataset), generator=generator)[:n].tolist()
+    subset = torch.utils.data.Subset(experience.dataset, indices)
+    loader = DataLoader(subset, batch_size=n, shuffle=False)
     batch = next(iter(loader))
     return batch[0], batch[1]
 
 
-def make_compatibility(model_factory, num_classes, probe_samples=64):
+def make_compatibility(model_factory, num_classes, probe_samples=64, probe_seed=0):
     return ProbeCompatibilityScorer(
         model_factory=model_factory,
         loss_fn=nn.functional.cross_entropy,
-        probe_fn=lambda exp: make_probe(exp, probe_samples),
+        probe_fn=lambda exp: make_probe(exp, probe_samples, seed=probe_seed),
         reference_fn=lambda _y: float(torch.log(torch.tensor(float(num_classes))).item()),
         probe_samples=probe_samples,
     )
@@ -191,8 +196,26 @@ class SkillMemoryPlugin(SupervisedPlugin):
         self._task_active = False
 
     def _reset_optimizer(self, strategy):
-        if strategy.optimizer is not None:
-            strategy.optimizer.state.clear()
+        """Clear state and rebind optimizer groups after dynamic-module replacement."""
+        optimizer = strategy.optimizer
+        if optimizer is None:
+            return
+
+        current_params = list(strategy.model.parameters())
+        old_count = sum(len(group["params"]) for group in optimizer.param_groups)
+        if old_count != len(current_params):
+            raise RuntimeError(
+                "Skill Memory changed the model parameter count after optimizer "
+                f"creation ({old_count} -> {len(current_params)}). Recreate the "
+                "optimizer after model adaptation instead of rebinding it."
+            )
+
+        offset = 0
+        for group in optimizer.param_groups:
+            count = len(group["params"])
+            group["params"] = current_params[offset : offset + count]
+            offset += count
+        optimizer.state.clear()
 
     def _scratch(self, strategy):
         _restore_initial_state(strategy.model, self._initial_state)
