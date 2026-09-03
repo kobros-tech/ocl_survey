@@ -1,8 +1,9 @@
 # Local datasets and downloaded benchmark data
 data/
 
-# Generated experiment results
-results/
+# Generated Skill Memory outputs (not notebook inputs)
+results/skill_memory_*/
+results/analysis/
 
 # Notebook caches
 .ipynb_checkpoints/
