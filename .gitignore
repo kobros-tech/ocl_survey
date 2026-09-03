@@ -1,0 +1,15 @@
+# Local datasets and downloaded benchmark data
+data/
+
+# Notebook caches
+.ipynb_checkpoints/
+**/.ipynb_checkpoints/
+
+# Python caches
+__pycache__/
+**/__pycache__/
+*.py[cod]
+
+# Local test/experiment caches
+.pytest_cache/
+.mypy_cache/

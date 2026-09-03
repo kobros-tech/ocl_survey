@@ -17,16 +17,19 @@ from src.toolkit.process_results import extract_results
 
 def compute_forgetting(dataframe, metric_name, prefix="Forgetting_"):
     """
-    Computes forgetting for a given metric name (difference from maximum value)
+    Compute online forgetting for one task-specific metric.
 
-    Adds it as a column
+    For each seed, forgetting at a measurement point is the maximum accuracy
+    observed so far for that task minus the current accuracy.  Future
+    observations are never used, so the result is causal and cannot leak
+    information from later training stages.
     """
 
-    df = dataframe.sort_values("mb_index")
+    df = dataframe.sort_values("mb_index").copy()
 
     if "valid_stream" in metric_name:
         raise NotImplementedError(
-            "The compututation of forgetting on continual metric streams is not supported"
+            "The computation of forgetting on continual metric streams is not supported"
         )
         df = decorate_with_training_task(
             df, base_name="Top1_Acc_Exp/eval_phase/valid_stream/Task000/Exp"
@@ -37,12 +40,24 @@ def compute_forgetting(dataframe, metric_name, prefix="Forgetting_"):
         )
 
     df = df.dropna(subset=["training_exp"])
-    df = df.sort_values(by=["mb_index", "training_exp"])
+    df = df.sort_values(by=["seed", "mb_index"])
 
-    df[prefix + metric_name] = df.groupby("seed", group_keys=False)[metric_name].apply(
-        lambda x: x.ffill().iloc[0] - x
+    # A task metric is NaN until that task has been evaluated.  Forward-fill
+    # those gaps, then compare the current value with the best value observed
+    # up to this point.  This is the standard max-past-accuracy definition.
+    def _forgetting(series):
+        observed = series.ffill()
+        best_so_far = observed.cummax()
+        return best_so_far - observed
+
+    df[prefix + metric_name] = df.groupby("seed", group_keys=False)[metric_name].transform(
+        _forgetting
     )
-    df.loc[df.groupby("seed").head(1).index, prefix + metric_name] = np.nan
+
+    # The first measurement cannot represent forgetting because no prior
+    # post-learning accuracy exists yet.
+    first_index = df.groupby("seed").head(1).index
+    df.loc[first_index, prefix + metric_name] = np.nan
 
     return df
 
@@ -55,8 +70,6 @@ def compute_average(dataframe, metric_names, avg_metric_name):
     """
 
     df = dataframe.sort_values("mb_index")
-    # df = df.dropna(subset=metric_names, how="all")
-
     df[avg_metric_name] = df[metric_names].mean(axis=1)
 
     return df
@@ -69,7 +82,11 @@ def compute_average_forgetting(
     name="Average_Forgetting",
 ):
     """
-    Computes average forgetting and adds it as a dataframe columns
+    Compute average forgetting across all task-specific test accuracies.
+
+    At each measurement point, only tasks that have already produced an
+    evaluation are included in the mean.  The final value therefore averages
+    the forgetting of all learned tasks.
     """
 
     prefix = "Forgetting_"
