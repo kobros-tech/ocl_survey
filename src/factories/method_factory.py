@@ -48,6 +48,7 @@ def create_strategy(
     dataset_name: str = None,
     evaluation_kwargs=None,
     strategy_kwargs=None,
+    experiment_seed: int = 0,
 ):
     strategy_dict = {
         "model": model,
@@ -162,6 +163,7 @@ def create_strategy(
             model_factory=lambda: deepcopy(model_template),
             num_classes=DS_CLASSES[dataset_name],
             probe_samples=int(strategy_kwargs.get("probe_samples", 64)),
+            probe_seed=int(experiment_seed),
         )
         skill_plugin = SkillMemoryPlugin(
             memory=skill_memory,

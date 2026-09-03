@@ -5,7 +5,19 @@ name: skill_memory
 
 # Skill Memory is a native OCL Survey strategy. It uses the same benchmark,
 # optimizer, evaluation and result logging pipeline as the other methods.
+# Split CIFAR-100 has 20 experiences, so max_skills=20 is effectively
+# unbounded for the current benchmark; it is not a matched bounded-memory
+# budget against replay methods.
 max_skills: 20
 probe_samples: 64
+
+# These thresholds operate on the normalized probe-loss score in
+# ProbeCompatibilityScorer. The score is not a calibrated probability.
+# Keep these values fixed before final benchmark evaluation unless an
+# independent calibration/sensitivity protocol is used.
 reuse_threshold: 0.90
 clone_threshold: 0.30
+
+# Optional mechanism-level ablation. Leave null for the adaptive policy used
+# in the main benchmark. Valid values are reuse, clone, and scratch.
+force_decision: null

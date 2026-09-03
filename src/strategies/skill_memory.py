@@ -42,6 +42,15 @@ class SkillMemory:
     def __len__(self):
         return len(self._records)
 
+    @property
+    def storage_bytes(self) -> int:
+        """Number of bytes occupied by stored model tensors."""
+        return sum(
+            tensor.numel() * tensor.element_size()
+            for record in self._records.values()
+            for tensor in record.state_dict.values()
+        )
+
     def best_match(self, query, scorer: Callable[[SkillRecord, Any], float]):
         if not self._records or scorer is None:
             return None, 0.0
@@ -145,18 +154,23 @@ class ProbeCompatibilityScorer:
         return max(0.0, min(1.0, 1.0 - loss / reference))
 
 
-def make_probe(experience, samples=64):
+def make_probe(experience, samples=64, seed=0):
+    """Build a deterministic probe from the current training experience only."""
     n = min(samples, len(experience.dataset))
-    loader = DataLoader(experience.dataset, batch_size=n, shuffle=False)
+    generator = torch.Generator()
+    generator.manual_seed(seed)
+    indices = torch.randperm(len(experience.dataset), generator=generator)[:n].tolist()
+    subset = torch.utils.data.Subset(experience.dataset, indices)
+    loader = DataLoader(subset, batch_size=n, shuffle=False)
     batch = next(iter(loader))
     return batch[0], batch[1]
 
 
-def make_compatibility(model_factory, num_classes, probe_samples=64):
+def make_compatibility(model_factory, num_classes, probe_samples=64, probe_seed=0):
     return ProbeCompatibilityScorer(
         model_factory=model_factory,
         loss_fn=nn.functional.cross_entropy,
-        probe_fn=lambda exp: make_probe(exp, probe_samples),
+        probe_fn=lambda exp: make_probe(exp, probe_samples, seed=probe_seed),
         reference_fn=lambda _y: float(torch.log(torch.tensor(float(num_classes))).item()),
         probe_samples=probe_samples,
     )
@@ -189,10 +203,49 @@ class SkillMemoryPlugin(SupervisedPlugin):
         self._initial_state = None
         self._saved_train_epochs = None
         self._task_active = False
+        self._audit_log: list[dict[str, Any]] = []
+
+    @property
+    def audit_log(self) -> list[dict[str, Any]]:
+        """Return decision records without exposing mutable internal entries."""
+        return [dict(entry) for entry in self._audit_log]
+
+    def _record_decision(self, experience, decision, record, score):
+        self._audit_log.append({
+            "experience": getattr(
+                getattr(experience, "origin_experience", None),
+                "current_experience",
+                experience.current_experience,
+            ),
+            "decision": decision,
+            "selected_skill": record.name if record is not None else None,
+            "compatibility_score": float(score),
+            "memory_skills": len(self.memory),
+            "memory_storage_bytes": self.memory.storage_bytes,
+            "probe_samples": getattr(self.compatibility, "probe_samples", None),
+        })
 
     def _reset_optimizer(self, strategy):
-        if strategy.optimizer is not None:
-            strategy.optimizer.state.clear()
+        """Rebind optimizer parameters after a dynamic module replacement.
+
+        Avalanche's dynamic adaptation can replace ``nn.Parameter`` objects.
+        Clearing optimizer state alone is insufficient because the optimizer
+        still holds references to the old parameters. Keep the existing
+        optimizer/scheduler object, but replace its parameter references with
+        the current model parameters and then discard stale state.
+        """
+        optimizer = strategy.optimizer
+        if optimizer is None:
+            return
+
+        current_params = list(strategy.model.parameters())
+        if len(optimizer.param_groups) != 1:
+            raise RuntimeError(
+                "Skill Memory optimizer rebinding currently requires exactly "
+                "one optimizer parameter group"
+            )
+        optimizer.param_groups[0]["params"] = current_params
+        optimizer.state.clear()
 
     def _scratch(self, strategy):
         _restore_initial_state(strategy.model, self._initial_state)
@@ -209,6 +262,7 @@ class SkillMemoryPlugin(SupervisedPlugin):
     def _adapt_to_original_task(self, strategy, experience):
         """Expand the classifier to the complete task after loading a skill."""
         avalanche_model_adaptation(strategy.model, _origin_experience(experience))
+        self._reset_optimizer(strategy)
 
     def before_training_exp(self, strategy, **kwargs):
         experience = strategy.experience
@@ -229,6 +283,7 @@ class SkillMemoryPlugin(SupervisedPlugin):
 
         if len(self.memory) == 0:
             self._scratch(strategy)
+            self._record_decision(experience, self.SCRATCH, None, 0.0)
             return
 
         record, score = self.memory.best_match(experience, self.compatibility)
@@ -254,12 +309,13 @@ class SkillMemoryPlugin(SupervisedPlugin):
         elif decision == self.CLONE:
             self.memory.load_into(record.name, strategy.model)
             self._adapt_to_original_task(strategy, experience)
-            self._reset_optimizer(strategy)
             self.last_decision = self.CLONE
             self.last_selected_skill = record.name
         else:
             self._scratch(strategy)
             self.last_decision = self.SCRATCH
+
+        self._record_decision(experience, self.last_decision, record, score)
 
     def after_training_exp(self, strategy, **kwargs):
         experience = strategy.experience
