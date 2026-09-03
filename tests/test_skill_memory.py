@@ -80,7 +80,9 @@ def test_optimizer_is_rebound_to_current_model_parameters():
     model[0] = nn.Linear(2, 3)
     plugin._reset_optimizer(strategy)
     new_parameters = list(model.parameters())
-    assert list(strategy.optimizer.param_groups[0]["params"]) == new_parameters
+    optimizer_parameters = list(strategy.optimizer.param_groups[0]["params"])
+    assert len(optimizer_parameters) == len(new_parameters)
+    assert all(optimizer_param is model_param for optimizer_param, model_param in zip(optimizer_parameters, new_parameters))
     assert all(not any(old is new for new in new_parameters) for old in old_parameters)
     assert len(strategy.optimizer.state) == 0
 
