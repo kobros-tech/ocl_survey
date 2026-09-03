@@ -1,7 +1,12 @@
 name: Skill Memory statistical study
 
 on:
-  workflow_dispatch:
+  push:
+    branches:
+      - feature/skill-memory-statistical-study
+  pull_request:
+    branches:
+      - feature/skill-memory-rigor-fixes
 
 permissions:
   contents: read
