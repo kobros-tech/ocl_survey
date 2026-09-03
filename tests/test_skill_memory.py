@@ -1,5 +1,5 @@
-import torch
 import pytest
+import torch
 from torch import nn
 
 from src.strategies.skill_memory import SkillMemory, SkillMemoryPlugin, make_probe
@@ -53,7 +53,7 @@ def test_optimizer_is_rebound_to_current_model_parameters():
 
     new_parameters = list(model.parameters())
     assert list(strategy.optimizer.param_groups[0]["params"]) == new_parameters
-    assert all(p not in new_parameters for p in old_parameters)
+    assert all(not any(old is new for new in new_parameters) for old in old_parameters)
 
 
 def test_probe_is_deterministic_for_same_seed():
