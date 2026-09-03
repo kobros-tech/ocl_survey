@@ -196,25 +196,25 @@ class SkillMemoryPlugin(SupervisedPlugin):
         self._task_active = False
 
     def _reset_optimizer(self, strategy):
-        """Clear state and rebind optimizer groups after dynamic-module replacement."""
+        """Rebind optimizer parameters after a dynamic module replacement.
+
+        Avalanche's dynamic adaptation can replace ``nn.Parameter`` objects.
+        Clearing optimizer state alone is insufficient because the optimizer
+        still holds references to the old parameters. Keep the existing
+        optimizer/scheduler object, but replace its parameter references with
+        the current model parameters and then discard stale state.
+        """
         optimizer = strategy.optimizer
         if optimizer is None:
             return
 
         current_params = list(strategy.model.parameters())
-        old_count = sum(len(group["params"]) for group in optimizer.param_groups)
-        if old_count != len(current_params):
+        if len(optimizer.param_groups) != 1:
             raise RuntimeError(
-                "Skill Memory changed the model parameter count after optimizer "
-                f"creation ({old_count} -> {len(current_params)}). Recreate the "
-                "optimizer after model adaptation instead of rebinding it."
+                "Skill Memory optimizer rebinding currently requires exactly "
+                "one optimizer parameter group"
             )
-
-        offset = 0
-        for group in optimizer.param_groups:
-            count = len(group["params"])
-            group["params"] = current_params[offset : offset + count]
-            offset += count
+        optimizer.param_groups[0]["params"] = current_params
         optimizer.state.clear()
 
     def _scratch(self, strategy):
@@ -232,6 +232,7 @@ class SkillMemoryPlugin(SupervisedPlugin):
     def _adapt_to_original_task(self, strategy, experience):
         """Expand the classifier to the complete task after loading a skill."""
         avalanche_model_adaptation(strategy.model, _origin_experience(experience))
+        self._reset_optimizer(strategy)
 
     def before_training_exp(self, strategy, **kwargs):
         experience = strategy.experience
@@ -277,7 +278,6 @@ class SkillMemoryPlugin(SupervisedPlugin):
         elif decision == self.CLONE:
             self.memory.load_into(record.name, strategy.model)
             self._adapt_to_original_task(strategy, experience)
-            self._reset_optimizer(strategy)
             self.last_decision = self.CLONE
             self.last_selected_skill = record.name
         else:
