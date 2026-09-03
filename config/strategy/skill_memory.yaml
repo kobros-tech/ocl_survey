@@ -5,6 +5,9 @@ name: skill_memory
 
 # Skill Memory is a native OCL Survey strategy. It uses the same benchmark,
 # optimizer, evaluation and result logging pipeline as the other methods.
+# Split CIFAR-100 has 20 experiences, so max_skills=20 is effectively
+# unbounded for the current benchmark; it is not a matched bounded-memory
+# budget against replay methods.
 max_skills: 20
 probe_samples: 64
 
