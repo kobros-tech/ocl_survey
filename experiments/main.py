@@ -98,6 +98,7 @@ def main(config):
         dataset_name=config.benchmark.factory_args.benchmark_name,
         strategy_kwargs=config["strategy"],
         evaluation_kwargs=config["evaluation"],
+        experiment_seed=int(config.experiment.seed),
     )
 
     print("Using strategy: ", strategy.__class__.__name__)
