@@ -11,9 +11,10 @@ name: skill_memory
 max_skills: 20
 probe_samples: 64
 
-# Compatibility score: S = clip(1 - CE / log(K), 0, 1), where CE is the
-# cross-entropy loss on the deterministic training probe and K is the number
-# of classes. Accuracy is top-1 probe accuracy:
+# Compatibility score: S = exp(-CE / log(K)), where CE is the cross-entropy
+# loss on the deterministic training probe and K is the number of classes.
+# Thus 0 < S <= 1 for finite CE >= 0, with S = 1 only when CE = 0.
+# Accuracy is top-1 probe accuracy:
 # A = (1/N) * sum_i 1[argmax_j(logit_ij) == y_i].
 # Both signals are measured before training on the new experience and use only
 # that experience's training probe.
