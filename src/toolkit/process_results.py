@@ -11,6 +11,7 @@ NAME_MAPS = {
     "linear_probing/logs": "probing",
 }
 
+
 def map_name(name):
     biggest_candidate = None
     for candidate in NAME_MAPS:
@@ -20,7 +21,7 @@ def map_name(name):
                 continue
             if len(candidate) > len(biggest_candidate):
                 biggest_candidate = candidate
-    return NAME_MAPS[biggest_candidate]
+    return NAME_MAPS.get(biggest_candidate)
 
 
 def gather_json_lines(filename):
@@ -46,29 +47,34 @@ def get_seed_from_path(path):
 
 def extract_results(directory, verbose=True):
     """
-    Extracts json results from dir, if several
-    files are present, it will concatenate the
-    entries of each files (so it's possible to
-    have more than one entry per step)
+    Extracts recognized JSON results from a directory.
+
+    Files that do not match one of NAME_MAPS are ignored. This allows runs to
+    contain auxiliary metadata (for example Skill Memory's audit JSON) without
+    accidentally treating it as a benchmark result or crashing extraction.
     """
 
-    results_df = None
     all_lines = collections.defaultdict(list)
     for root, dirs, files in os.walk(directory):
         for f in files:
-            if "json" in f:
-                name = os.path.join(root, f)
+            if "json" not in f:
+                continue
 
+            path = os.path.join(root, f)
+            name = map_name(path)
+            if name is None:
                 if verbose:
-                    print(name)
-                    print(map_name(name))
+                    print(f"Skipping unrecognized JSON result: {path}")
+                continue
 
-                name = map_name(name)
+            if verbose:
+                print(path)
+                print(name)
 
-                seed = get_seed_from_path(root)
-                new_lines = gather_json_lines(os.path.join(root, f))
-                annotate_lines(new_lines, seed=seed, name=name)
-                all_lines[name] += new_lines
+            seed = get_seed_from_path(root)
+            new_lines = gather_json_lines(path)
+            annotate_lines(new_lines, seed=seed, name=name)
+            all_lines[name] += new_lines
 
     dataframes = {}
     for name in all_lines:
