@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+import json
 import os
 
 import hydra
@@ -12,6 +13,7 @@ import src.toolkit.utils as utils
 from avalanche.benchmarks import with_classes_timeline
 from avalanche.benchmarks.scenarios.online import split_online_stream
 from src.factories.benchmark_factory import DS_SIZES
+from src.strategies.skill_memory import SkillMemoryPlugin
 
 
 @hydra.main(config_path="../config", config_name="config.yaml")
@@ -104,6 +106,11 @@ def main(config):
     print("Using strategy: ", strategy.__class__.__name__)
     print("With plugins: ", strategy.plugins)
 
+    skill_memory_plugin = next(
+        (plugin for plugin in strategy.plugins if isinstance(plugin, SkillMemoryPlugin)),
+        None,
+    )
+
     for t, experience in enumerate(scenario.train_stream):
         if config.experiment.train_online:
             # Avalanche 0.6's online splitter returns OnlineCLExperience,
@@ -135,6 +142,10 @@ def main(config):
             )
 
         results = strategy.eval(scenario.test_stream[: t + 1])
+
+        if skill_memory_plugin is not None:
+            with open(os.path.join(logdir, "skill_memory_audit.json"), "w", encoding="utf-8") as f:
+                json.dump(skill_memory_plugin.audit_log, f, indent=2)
 
     return results
 
