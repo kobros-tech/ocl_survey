@@ -1,6 +1,9 @@
 # Local datasets and downloaded benchmark data
 data/
 
+# Generated experiment results
+results/
+
 # Notebook caches
 .ipynb_checkpoints/
 **/.ipynb_checkpoints/
