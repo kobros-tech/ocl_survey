@@ -17,3 +17,7 @@ probe_samples: 64
 # independent calibration/sensitivity protocol is used.
 reuse_threshold: 0.90
 clone_threshold: 0.30
+
+# Optional mechanism-level ablation. Leave null for the adaptive policy used
+# in the main benchmark. Valid values are reuse, clone, and scratch.
+force_decision: null
