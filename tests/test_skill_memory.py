@@ -12,6 +12,14 @@ class DummyStrategy:
         self.train_epochs = 2
 
 
+class DummyExperience:
+    def __init__(self, index):
+        self.current_experience = index
+        self.is_first_subexp = True
+        self.is_last_subexp = True
+        self.dataset = [(torch.tensor([float(index)]), index)]
+
+
 def test_memory_stores_independent_cpu_copy():
     memory = SkillMemory(max_skills=2)
     source = {"weight": torch.tensor([[1.0, 2.0]])}
@@ -96,10 +104,7 @@ def test_threshold_order_is_validated():
 
 
 def test_probe_is_deterministic_for_same_seed():
-    class Experience:
-        pass
-
-    experience = Experience()
+    experience = DummyExperience(0)
     experience.dataset = [(torch.tensor([float(i)]), i) for i in range(10)]
 
     x1, y1 = make_probe(experience, samples=5, seed=123)
@@ -109,12 +114,76 @@ def test_probe_is_deterministic_for_same_seed():
 
 
 def test_probe_changes_with_seed():
-    class Experience:
-        pass
-
-    experience = Experience()
+    experience = DummyExperience(0)
     experience.dataset = [(torch.tensor([float(i)]), i) for i in range(10)]
 
     _, y1 = make_probe(experience, samples=5, seed=123)
     _, y2 = make_probe(experience, samples=5, seed=456)
     assert not torch.equal(y1, y2)
+
+
+def test_scratch_restores_initial_model_state(monkeypatch):
+    monkeypatch.setattr(
+        "src.strategies.skill_memory.avalanche_model_adaptation",
+        lambda *_args, **_kwargs: None,
+    )
+    model = nn.Linear(2, 2)
+    strategy = DummyStrategy(model)
+    initial = {k: v.detach().clone() for k, v in model.state_dict().items()}
+    plugin = SkillMemoryPlugin(force_decision=SkillMemoryPlugin.SCRATCH)
+
+    strategy.experience = DummyExperience(0)
+    plugin.before_training_exp(strategy)
+    with torch.no_grad():
+        model.weight.fill_(9.0)
+        model.bias.fill_(9.0)
+    plugin.after_training_exp(strategy)
+
+    plugin.before_training_exp(strategy)
+    assert torch.equal(model.weight, initial["weight"])
+    assert torch.equal(model.bias, initial["bias"])
+    assert plugin.last_decision == SkillMemoryPlugin.SCRATCH
+
+
+def test_clone_loads_skill_and_keeps_training_budget(monkeypatch):
+    monkeypatch.setattr(
+        "src.strategies.skill_memory.avalanche_model_adaptation",
+        lambda *_args, **_kwargs: None,
+    )
+    model = nn.Linear(2, 2)
+    strategy = DummyStrategy(model)
+    plugin = SkillMemoryPlugin(force_decision=SkillMemoryPlugin.CLONE)
+    stored = {k: torch.full_like(v, 3.0) for k, v in model.state_dict().items()}
+    plugin.memory.register("skill-0", stored)
+
+    strategy.experience = DummyExperience(1)
+    plugin.before_training_exp(strategy)
+
+    assert torch.equal(model.weight, stored["weight"])
+    assert torch.equal(model.bias, stored["bias"])
+    assert strategy.train_epochs == 2
+    assert plugin.last_decision == SkillMemoryPlugin.CLONE
+    assert plugin.last_selected_skill == "skill-0"
+
+
+def test_reuse_loads_skill_and_skips_training_then_restores_budget(monkeypatch):
+    monkeypatch.setattr(
+        "src.strategies.skill_memory.avalanche_model_adaptation",
+        lambda *_args, **_kwargs: None,
+    )
+    model = nn.Linear(2, 2)
+    strategy = DummyStrategy(model)
+    plugin = SkillMemoryPlugin(force_decision=SkillMemoryPlugin.REUSE)
+    stored = {k: torch.full_like(v, 4.0) for k, v in model.state_dict().items()}
+    plugin.memory.register("skill-0", stored)
+
+    strategy.experience = DummyExperience(1)
+    plugin.before_training_exp(strategy)
+
+    assert torch.equal(model.weight, stored["weight"])
+    assert torch.equal(model.bias, stored["bias"])
+    assert strategy.train_epochs == 0
+    assert plugin.last_decision == SkillMemoryPlugin.REUSE
+
+    plugin.after_training_exp(strategy)
+    assert strategy.train_epochs == 2
