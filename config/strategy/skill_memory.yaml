@@ -7,5 +7,10 @@ name: skill_memory
 # optimizer, evaluation and result logging pipeline as the other methods.
 max_skills: 20
 probe_samples: 64
+
+# These thresholds operate on the normalized probe-loss score in
+# ProbeCompatibilityScorer. The score is not a calibrated probability.
+# Keep these values fixed before final benchmark evaluation unless an
+# independent calibration/sensitivity protocol is used.
 reuse_threshold: 0.90
 clone_threshold: 0.30
