@@ -141,8 +141,15 @@ class ProbeCompatibilityScorer:
         A = (1 / N) * sum_i 1[argmax_j p_ij == y_i]
 
     where p_ij are the model logits/probabilities for example i and y_i is its
-    ground-truth class. The score and accuracy are both measured before training
-    on the new experience and use only its deterministic training probe.
+    ground-truth class. The score uses the exponential transform of the
+    cross-entropy loss:
+
+        S = exp(-CE / C)
+
+    where C is the reference loss. This gives 0 < S <= 1 for finite CE >= 0,
+    with S = 1 only when CE = 0. The score and accuracy are both measured
+    before training on the new experience and use only its deterministic
+    training probe.
     """
 
     def __init__(self, model_factory, loss_fn, probe_fn, reference_fn, probe_samples=64):
@@ -173,7 +180,7 @@ class ProbeCompatibilityScorer:
         if reference <= 1e-8:
             score = 1.0 if loss <= 1e-8 else 0.0
         else:
-            score = max(0.0, min(1.0, 1.0 - loss / reference))
+            score = float(torch.exp(torch.tensor(-loss / reference)).item())
         return CompatibilityResult(score=score, accuracy=accuracy)
 
 
