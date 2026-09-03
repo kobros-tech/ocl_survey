@@ -169,7 +169,6 @@ def make_probe(experience, samples=64, seed=0):
 def make_compatibility(model_factory, num_classes, probe_samples=64, probe_seed=0):
     return ProbeCompatibilityScorer(
         model_factory=model_factory,
-        num_classes=num_classes,
         loss_fn=nn.functional.cross_entropy,
         probe_fn=lambda exp: make_probe(exp, probe_samples, seed=probe_seed),
         reference_fn=lambda _y: float(torch.log(torch.tensor(float(num_classes))).item()),
