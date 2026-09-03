@@ -42,6 +42,8 @@ cd experiments/
 python main.py strategy=er experiment=split_cifar100
 ```
 
+By default, experiment strategies use `device: auto`. This selects CUDA when a CUDA-capable PyTorch device is available and falls back to CPU otherwise. This makes the same experiment commands suitable for a local CPU environment and GPU-backed environments such as Google Colab. An explicit device can still be supplied when needed, for example `strategy.device=cpu` or `strategy.device=cuda`.
+
 # Structure
 
 The code is structured as follows:
@@ -104,6 +106,21 @@ Results will be saved in the directory specified in results.yaml. Under the foll
 ```
 <results_dir>/<strategy_name>_<benchmark_name>/<seed>/
 ```
+
+## Notebook / Google Colab workflow
+
+The Skill Memory comparison notebook is designed to consume the same result format as the existing OCL Survey strategies. For a fresh checkout or Colab runtime, run the experiments first and then open `notebooks/skill_memory_strategy_comparison.ipynb` to compare the generated results.
+
+The experiment entry point automatically selects CPU or CUDA when `strategy.device=auto`, so no notebook-specific device configuration is required. In Google Colab, enable a GPU runtime to use CUDA; on a machine without CUDA, the same command falls back to CPU.
+
+For example:
+
+```
+cd experiments/
+python main.py strategy=skill_memory experiment=split_cifar100
+```
+
+This changes only the execution device. The benchmark, model, optimizer, memory size, seed, training schedule, and result/evaluation pipeline remain controlled by the same Hydra configuration, so CPU and GPU runs follow the same experiment protocol.
 
 # Hyperparameter selection
 
