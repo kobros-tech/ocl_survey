@@ -91,7 +91,7 @@ def test_invalid_decision_is_rejected():
 
 
 def test_threshold_order_is_validated():
-    with pytest.raises(ValueError, match="clone_threshold"):
+    with pytest.raises(ValueError, match="require 0 <= clone_threshold"):
         SkillMemoryPlugin(reuse_threshold=0.2, clone_threshold=0.3)
 
 
