@@ -18,6 +18,14 @@ class SkillRecord:
     metadata: dict[str, Any] = field(default_factory=dict)
 
 
+@dataclass(frozen=True)
+class CompatibilityResult:
+    """Compatibility signals measured on the same deterministic training probe."""
+
+    score: float
+    accuracy: float
+
+
 class SkillMemory:
     """Bounded registry of immutable, independently stored model states."""
 
@@ -51,12 +59,12 @@ class SkillMemory:
             for tensor in record.state_dict.values()
         )
 
-    def best_match(self, query, scorer: Callable[[SkillRecord, Any], float]):
+    def best_match(self, query, scorer: Callable[[SkillRecord, Any], CompatibilityResult]):
         if not self._records or scorer is None:
-            return None, 0.0
-        scored = [(float(scorer(r, query)), r) for r in self._records.values()]
-        score, record = max(scored, key=lambda x: x[0])
-        return record, score
+            return None, CompatibilityResult(score=0.0, accuracy=0.0)
+        scored = [(scorer(r, query), r) for r in self._records.values()]
+        result, record = max(scored, key=lambda x: x[0].score)
+        return record, result
 
     def load_into(self, name: str, model: nn.Module):
         state_dict = self._records[name].state_dict
@@ -126,7 +134,16 @@ def _origin_experience(experience):
 
 
 class ProbeCompatibilityScorer:
-    """Zero-shot compatibility measured only on training data from the new experience."""
+    """Measure compatibility score and top-1 accuracy on the training probe.
+
+    Accuracy is the fraction of probe examples whose predicted class is correct:
+
+        A = (1 / N) * sum_i 1[argmax_j p_ij == y_i]
+
+    where p_ij are the model logits/probabilities for example i and y_i is its
+    ground-truth class. The score and accuracy are both measured before training
+    on the new experience and use only its deterministic training probe.
+    """
 
     def __init__(self, model_factory, loss_fn, probe_fn, reference_fn, probe_samples=64):
         self.model_factory = model_factory
@@ -147,11 +164,17 @@ class ProbeCompatibilityScorer:
 
         x, y = self.probe_fn(experience)
         with torch.no_grad():
-            loss = float(self.loss_fn(model(x), y))
+            logits = model(x)
+            loss = float(self.loss_fn(logits, y))
+            predictions = logits.argmax(dim=1)
+            accuracy = float((predictions == y).float().mean().item())
+
         reference = float(self.reference_fn(y))
         if reference <= 1e-8:
-            return 1.0 if loss <= 1e-8 else 0.0
-        return max(0.0, min(1.0, 1.0 - loss / reference))
+            score = 1.0 if loss <= 1e-8 else 0.0
+        else:
+            score = max(0.0, min(1.0, 1.0 - loss / reference))
+        return CompatibilityResult(score=score, accuracy=accuracy)
 
 
 def make_probe(experience, samples=64, seed=0):
@@ -183,12 +206,18 @@ class SkillMemoryPlugin(SupervisedPlugin):
 
     def __init__(self, memory=None, *, compatibility=None, skill_name=None,
                  max_skills=20, reuse_threshold=0.90, clone_threshold=0.30,
+                 reuse_accuracy_threshold=0.90, clone_accuracy_threshold=0.15,
                  force_decision=None):
         super().__init__()
         if force_decision not in (None, self.REUSE, self.CLONE, self.SCRATCH):
             raise ValueError("invalid force_decision")
         if not 0 <= clone_threshold <= reuse_threshold <= 1:
             raise ValueError("require 0 <= clone_threshold <= reuse_threshold <= 1")
+        if not 0 <= clone_accuracy_threshold <= reuse_accuracy_threshold <= 1:
+            raise ValueError(
+                "require 0 <= clone_accuracy_threshold <= "
+                "reuse_accuracy_threshold <= 1"
+            )
         self.memory = memory if memory is not None else SkillMemory(max_skills=max_skills)
         self.compatibility = compatibility
         self.skill_name = skill_name or (
@@ -196,10 +225,13 @@ class SkillMemoryPlugin(SupervisedPlugin):
         )
         self.reuse_threshold = reuse_threshold
         self.clone_threshold = clone_threshold
+        self.reuse_accuracy_threshold = reuse_accuracy_threshold
+        self.clone_accuracy_threshold = clone_accuracy_threshold
         self.force_decision = force_decision
         self.last_decision = self.SCRATCH
         self.last_selected_skill = None
         self.last_compatibility_score = 0.0
+        self.last_compatibility_accuracy = 0.0
         self._initial_state = None
         self._saved_train_epochs = None
         self._task_active = False
@@ -210,7 +242,7 @@ class SkillMemoryPlugin(SupervisedPlugin):
         """Return decision records without exposing mutable internal entries."""
         return [dict(entry) for entry in self._audit_log]
 
-    def _record_decision(self, experience, decision, record, score):
+    def _record_decision(self, experience, decision, record, result):
         self._audit_log.append({
             "experience": getattr(
                 getattr(experience, "origin_experience", None),
@@ -219,7 +251,8 @@ class SkillMemoryPlugin(SupervisedPlugin):
             ),
             "decision": decision,
             "selected_skill": record.name if record is not None else None,
-            "compatibility_score": float(score),
+            "compatibility_score": float(result.score),
+            "compatibility_accuracy": float(result.accuracy),
             "memory_skills": len(self.memory),
             "memory_storage_bytes": self.memory.storage_bytes,
             "probe_samples": getattr(self.compatibility, "probe_samples", None),
@@ -279,20 +312,34 @@ class SkillMemoryPlugin(SupervisedPlugin):
         self.last_decision = self.SCRATCH
         self.last_selected_skill = None
         self.last_compatibility_score = 0.0
+        self.last_compatibility_accuracy = 0.0
         self._saved_train_epochs = None
 
         if len(self.memory) == 0:
             self._scratch(strategy)
-            self._record_decision(experience, self.SCRATCH, None, 0.0)
+            result = CompatibilityResult(score=0.0, accuracy=0.0)
+            self._record_decision(experience, self.SCRATCH, None, result)
             return
 
-        record, score = self.memory.best_match(experience, self.compatibility)
-        self.last_compatibility_score = score
+        record, result = self.memory.best_match(experience, self.compatibility)
+        self.last_compatibility_score = result.score
+        self.last_compatibility_accuracy = result.accuracy
         decision = self.force_decision
         if decision is None:
-            if record is not None and score >= self.reuse_threshold:
+            # REUSE requires both a high compatibility score and high accuracy.
+            if (
+                record is not None
+                and result.score >= self.reuse_threshold
+                and result.accuracy >= self.reuse_accuracy_threshold
+            ):
                 decision = self.REUSE
-            elif record is not None and score >= self.clone_threshold:
+            # CLONE requires both signals to clear their clone thresholds and
+            # is reached only when the stricter REUSE condition is not met.
+            elif (
+                record is not None
+                and result.score >= self.clone_threshold
+                and result.accuracy >= self.clone_accuracy_threshold
+            ):
                 decision = self.CLONE
             else:
                 decision = self.SCRATCH
@@ -315,7 +362,7 @@ class SkillMemoryPlugin(SupervisedPlugin):
             self._scratch(strategy)
             self.last_decision = self.SCRATCH
 
-        self._record_decision(experience, self.last_decision, record, score)
+        self._record_decision(experience, self.last_decision, record, result)
 
     def after_training_exp(self, strategy, **kwargs):
         experience = strategy.experience
@@ -334,6 +381,7 @@ class SkillMemoryPlugin(SupervisedPlugin):
                     "acquisition_decision": self.last_decision,
                     "selected_skill": self.last_selected_skill,
                     "compatibility_score": self.last_compatibility_score,
+                    "compatibility_accuracy": self.last_compatibility_accuracy,
                     "experience": getattr(
                         getattr(experience, "origin_experience", None),
                         "current_experience",
