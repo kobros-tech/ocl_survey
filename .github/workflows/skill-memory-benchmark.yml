@@ -1,6 +1,9 @@
 name: Skill Memory benchmark
 
 on:
+  push:
+    branches:
+      - feature/skill-memory-rigor-fixes
   workflow_dispatch:
 
 permissions:
@@ -17,7 +20,7 @@ jobs:
         seed: [0, 1, 2, 3, 4]
 
     steps:
-      - name: Check out selected commit
+      - name: Check out pushed commit
         uses: actions/checkout@v4
         with:
           ref: ${{ github.sha }}
