@@ -111,6 +111,24 @@ def main(config):
         None,
     )
 
+    # Forced REUSE/CLONE/SCRATCH is a mechanism-level ablation, not part of the
+    # adaptive benchmark policy. Apply it after factory construction so the
+    # existing OCL Survey strategy lifecycle remains authoritative.
+    if skill_memory_plugin is not None:
+        forced_decision = config.strategy.get("force_decision", None)
+        if forced_decision is not None:
+            forced_decision = str(forced_decision).lower()
+            if forced_decision not in (
+                SkillMemoryPlugin.REUSE,
+                SkillMemoryPlugin.CLONE,
+                SkillMemoryPlugin.SCRATCH,
+            ):
+                raise ValueError(
+                    "strategy.force_decision must be one of: reuse, clone, scratch"
+                )
+            skill_memory_plugin.force_decision = forced_decision
+            print(f"Skill Memory forced decision: {forced_decision}")
+
     for t, experience in enumerate(scenario.train_stream):
         if config.experiment.train_online:
             # Avalanche 0.6's online splitter returns OnlineCLExperience,
@@ -138,16 +156,14 @@ def main(config):
 
         if config.experiment.save_models:
             torch.save(
-                strategy.model.state_dict(), os.path.join(logdir, f"model_{t}.ckpt")
+                strategy.model.state_dict(),
+                os.path.join(logdir, f"model_{t}.pth"),
             )
 
-        results = strategy.eval(scenario.test_stream[: t + 1])
-
         if skill_memory_plugin is not None:
-            with open(os.path.join(logdir, "skill_memory_audit.json"), "w", encoding="utf-8") as f:
-                json.dump(skill_memory_plugin.audit_log, f, indent=2)
-
-    return results
+            audit_path = os.path.join(logdir, "skill_memory_audit.json")
+            with open(audit_path, "w", encoding="utf-8") as audit_file:
+                json.dump(skill_memory_plugin.audit_log, audit_file, indent=2)
 
 
 if __name__ == "__main__":
