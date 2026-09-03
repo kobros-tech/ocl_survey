@@ -156,7 +156,7 @@ If you use this repo for a research project please use the following citation:
 ```
 @inproceedings{soutif2023comprehensive,
   title={A comprehensive empirical evaluation on online continual learning},
-  author={Soutif-Cormerais, Albin and Carta, Antonio and Cossu, Andrea and Hurtado, Julio and Lomonaco, Vincenzo and Van de Weijer, Joost and Hemati, Hamed},
+  author={Soutif-Cormerais, Albin and Carta, Andrea Cossu, Andrea and Hurtado, Julio and Lomonaco, Vincenzo and Van de Weijer, Joost and Hemati, Hamed},
   booktitle={Proceedings of the IEEE/CVF International Conference on Computer Vision},
   pages={3518--3528},
   year={2023}
