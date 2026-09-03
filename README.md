@@ -61,7 +61,7 @@ The code is structured as follows:
 │   ├── scheduler
 │   └── strategy
 ├── experiments
-│   ├── main_hp_tuning.py # Main script used for hyperparameter optimization
+│   ├── main_hp_tuning.py # Best configs found by main_hp_tuning.py are stored here
 │   ├── main.py # Main script used to launch single experiments
 │   └── spaces.py
 ├── notebooks
