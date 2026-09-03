@@ -170,7 +170,9 @@ def create_strategy(
             compatibility=compatibility,
             max_skills=int(strategy_kwargs.get("max_skills", 20)),
             reuse_threshold=float(strategy_kwargs.get("reuse_threshold", 0.90)),
-            clone_threshold=float(strategy_kwargs.get("clone_threshold", 0.30)),
+            clone_threshold=float(strategy_kwargs.get("clone_threshold", 0.15)),
+            reuse_accuracy_threshold=float(strategy_kwargs.get("reuse_accuracy_threshold", 0.90)),
+            clone_accuracy_threshold=float(strategy_kwargs.get("clone_accuracy_threshold", 0.15)),
         )
         plugins.append(skill_plugin)
 
