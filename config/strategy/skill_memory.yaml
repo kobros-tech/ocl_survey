@@ -11,9 +11,21 @@ name: skill_memory
 max_skills: 20
 probe_samples: 64
 
-# These thresholds operate on the normalized probe-loss score and the
-# classification accuracy measured on the same deterministic training probe.
-# They are fixed before benchmark evaluation and are not tuned on test data.
+# Compatibility score: S = clip(1 - CE / log(K), 0, 1), where CE is the
+# cross-entropy loss on the deterministic training probe and K is the number
+# of classes. Accuracy is top-1 probe accuracy:
+# A = (1/N) * sum_i 1[argmax_j(logit_ij) == y_i].
+# Both signals are measured before training on the new experience and use only
+# that experience's training probe.
+#
+# Decision policy:
+#   REUSE  iff S >= reuse_threshold AND A >= reuse_accuracy_threshold
+#   CLONE  iff S >= clone_threshold AND A >= clone_accuracy_threshold,
+#           but the REUSE condition is not satisfied
+#   SCRATCH otherwise
+#
+# The final threshold values/formula should be determined by the experiment,
+# not tuned against the final test-set results.
 reuse_threshold: 0.90
 clone_threshold: 0.15
 reuse_accuracy_threshold: 0.90
