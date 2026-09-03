@@ -42,7 +42,7 @@ def max_compatible_score_for_accuracy(accuracy: float, num_classes: int) -> floa
     return float(
         torch.exp(
             torch.tensor(
-                -(1.0 - accuracy) * torch.log(torch.tensor(float(2)))
+                -(1.0 - accuracy) * torch.log(torch.tensor(2.0))
                 / torch.log(torch.tensor(float(num_classes)))
             )
         ).item()
@@ -146,8 +146,7 @@ def _restore_initial_state(model: nn.Module, initial_state: Mapping[str, Tensor]
         else:
             raise RuntimeError(
                 f"Cannot restore scratch state for {name}: "
-                f"current shape {tuple(target.shape)}, "
-                f"initial shape {tuple(initial.shape)}"
+                f"current shape {tuple(target.shape)}, initial shape {tuple(initial.shape)}"
             )
 
 
@@ -157,23 +156,23 @@ def _origin_experience(experience):
 
 
 class ProbeCompatibilityScorer:
-    """Measure compatibility score and top-1 accuracy on the training probe.
+    """Measure compatibility score and top-1 accuracy on the training probe."""
 
-    Accuracy is the fraction of probe examples whose predicted class is correct.
-    The score is the exponential transform of cross-entropy:
-
-        S = exp(-CE / C)
-
-    where C is the reference loss. Both signals are measured before training on
-    the new experience and use only its deterministic training probe.
-    """
-
-    def __init__(self, model_factory, loss_fn, probe_fn, reference_fn, probe_samples=64):
+    def __init__(
+        self,
+        model_factory,
+        loss_fn,
+        probe_fn,
+        reference_fn,
+        probe_samples=64,
+        num_classes=100,
+    ):
         self.model_factory = model_factory
         self.loss_fn = loss_fn
         self.probe_fn = probe_fn
         self.reference_fn = reference_fn
         self.probe_samples = probe_samples
+        self.num_classes = num_classes
 
     def __call__(self, record, experience):
         model = self.model_factory()
@@ -198,10 +197,10 @@ class ProbeCompatibilityScorer:
         else:
             score = float(torch.exp(torch.tensor(-loss / reference)).item())
 
-        # If these two signals are ever inconsistent, fail loudly instead of
-        # silently making a selection from contradictory diagnostics. A tiny
-        # tolerance accommodates floating-point boundary effects.
-        upper_bound = max_compatible_score_for_accuracy(accuracy, num_classes=max(2, int(round(torch.exp(torch.tensor(reference)).item()))))
+        # This is a mathematical consistency check, not a decision threshold.
+        # If it fails, the probe labels/output space or score calculation is
+        # inconsistent and the benchmark should not silently continue.
+        upper_bound = max_compatible_score_for_accuracy(accuracy, self.num_classes)
         if score > upper_bound + 1e-6:
             raise RuntimeError(
                 "Compatibility score/accuracy inconsistency: "
@@ -231,6 +230,7 @@ def make_compatibility(model_factory, num_classes, probe_samples=64, probe_seed=
         probe_fn=lambda exp: make_probe(exp, probe_samples, seed=probe_seed),
         reference_fn=lambda _y: float(torch.log(torch.tensor(float(num_classes))).item()),
         probe_samples=probe_samples,
+        num_classes=num_classes,
     )
 
 
@@ -274,7 +274,6 @@ class SkillMemoryPlugin(SupervisedPlugin):
 
     @property
     def audit_log(self) -> list[dict[str, Any]]:
-        """Return decision records without exposing mutable internal entries."""
         return [dict(entry) for entry in self._audit_log]
 
     def _record_decision(self, experience, decision, record, result):
@@ -294,7 +293,6 @@ class SkillMemoryPlugin(SupervisedPlugin):
         })
 
     def _reset_optimizer(self, strategy):
-        """Rebind optimizer parameters after a dynamic module replacement."""
         optimizer = strategy.optimizer
         if optimizer is None:
             return
@@ -302,8 +300,7 @@ class SkillMemoryPlugin(SupervisedPlugin):
         current_params = list(strategy.model.parameters())
         if len(optimizer.param_groups) != 1:
             raise RuntimeError(
-                "Skill Memory optimizer rebinding currently requires exactly "
-                "one optimizer parameter group"
+                "Skill Memory optimizer rebinding currently requires exactly one optimizer parameter group"
             )
         optimizer.param_groups[0]["params"] = current_params
         optimizer.state.clear()
@@ -326,16 +323,12 @@ class SkillMemoryPlugin(SupervisedPlugin):
 
     def before_training_exp(self, strategy, **kwargs):
         experience = strategy.experience
-
         if self._task_active and not self._is_first_subexp(experience):
             return
 
         self._task_active = True
         if self._initial_state is None:
-            self._initial_state = {
-                k: v.detach().cpu().clone()
-                for k, v in strategy.model.state_dict().items()
-            }
+            self._initial_state = {k: v.detach().cpu().clone() for k, v in strategy.model.state_dict().items()}
         self.last_decision = self.SCRATCH
         self.last_selected_skill = None
         self.last_compatibility_score = 0.0
@@ -353,17 +346,9 @@ class SkillMemoryPlugin(SupervisedPlugin):
         self.last_compatibility_accuracy = result.accuracy
         decision = self.force_decision
         if decision is None:
-            if (
-                record is not None
-                and result.score >= self.reuse_threshold
-                and result.accuracy >= self.reuse_accuracy_threshold
-            ):
+            if record is not None and result.score >= self.reuse_threshold and result.accuracy >= self.reuse_accuracy_threshold:
                 decision = self.REUSE
-            elif (
-                record is not None
-                and result.score >= self.clone_threshold
-                and result.accuracy >= self.clone_accuracy_threshold
-            ):
+            elif record is not None and result.score >= self.clone_threshold and result.accuracy >= self.clone_accuracy_threshold:
                 decision = self.CLONE
             else:
                 decision = self.SCRATCH
@@ -381,6 +366,7 @@ class SkillMemoryPlugin(SupervisedPlugin):
             self.memory.load_into(record.name, strategy.model)
             self._adapt_to_original_task(strategy, experience)
             self.last_decision = self.CLONE
+            self.last_selected_skill = record.name
         else:
             self._scratch(strategy)
             self.last_decision = self.SCRATCH
@@ -389,7 +375,6 @@ class SkillMemoryPlugin(SupervisedPlugin):
 
     def after_training_exp(self, strategy, **kwargs):
         experience = strategy.experience
-
         if not self._is_last_subexp(experience):
             return
 
