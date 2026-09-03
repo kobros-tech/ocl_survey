@@ -16,7 +16,8 @@ def main():
         subprocess.run(
             [
                 sys.executable,
-                "experiments/main.py",
+                "-m",
+                "experiments.main",
                 "strategy=skill_memory",
                 "experiment=split_cifar100",
                 f"experiment.seed={seed}",
