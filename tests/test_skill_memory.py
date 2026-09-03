@@ -48,6 +48,18 @@ def test_memory_capacity_is_bounded():
         memory.register("b", {"weight": torch.zeros(1)})
 
 
+def test_memory_storage_bytes_accounts_for_tensor_storage():
+    memory = SkillMemory(max_skills=2)
+    memory.register(
+        "a",
+        {
+            "weight": torch.ones(2, dtype=torch.float32),
+            "bias": torch.ones(1, dtype=torch.float32),
+        },
+    )
+    assert memory.storage_bytes == 12
+
+
 def test_best_match_selects_highest_score():
     memory = SkillMemory(max_skills=3)
     memory.register("a", {"weight": torch.ones(1)})
@@ -187,3 +199,27 @@ def test_reuse_loads_skill_and_skips_training_then_restores_budget(monkeypatch):
 
     plugin.after_training_exp(strategy)
     assert strategy.train_epochs == 2
+
+
+def test_decision_audit_records_action_and_resource_usage(monkeypatch):
+    monkeypatch.setattr(
+        "src.strategies.skill_memory.avalanche_model_adaptation",
+        lambda *_args, **_kwargs: None,
+    )
+    model = nn.Linear(2, 2)
+    strategy = DummyStrategy(model)
+    plugin = SkillMemoryPlugin(force_decision=SkillMemoryPlugin.CLONE)
+    stored = {k: torch.full_like(v, 3.0) for k, v in model.state_dict().items()}
+    plugin.memory.register("skill-0", stored)
+
+    strategy.experience = DummyExperience(1)
+    plugin.before_training_exp(strategy)
+
+    assert len(plugin.audit_log) == 1
+    event = plugin.audit_log[0]
+    assert event["experience"] == 1
+    assert event["decision"] == SkillMemoryPlugin.CLONE
+    assert event["selected_skill"] == "skill-0"
+    assert event["compatibility_score"] == pytest.approx(0.0)
+    assert event["memory_skills"] == 1
+    assert event["memory_storage_bytes"] == sum(t.numel() * t.element_size() for t in stored.values())
