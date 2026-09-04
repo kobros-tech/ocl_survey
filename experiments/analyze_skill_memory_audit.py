@@ -17,6 +17,7 @@ Usage:
 
 import json
 import math
+import re
 import sys
 from pathlib import Path
 
@@ -24,6 +25,7 @@ import numpy as np
 import pandas as pd
 
 EXPECTED_SEEDS = set(range(10))
+SEED_DIR_RE = re.compile(r"^seed-(\d+)$")
 
 
 def max_score_for_accuracy(accuracy: float, num_classes: int = 100) -> float:
@@ -36,8 +38,9 @@ def load_audits(root: Path) -> pd.DataFrame:
     for path in paths:
         seed = None
         for part in path.parts:
-            if part.isdigit():
-                seed = int(part)
+            match = SEED_DIR_RE.fullmatch(part)
+            if match:
+                seed = int(match.group(1))
                 break
         if seed is None:
             raise SystemExit(f"Could not determine seed from audit path: {path}")
