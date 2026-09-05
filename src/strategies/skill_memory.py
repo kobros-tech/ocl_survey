@@ -26,6 +26,29 @@ class CompatibilityResult:
     accuracy: float
 
 
+def max_compatible_score_for_accuracy(accuracy: float, num_classes: int) -> float:
+    """Return a conservative upper bound for ``S = exp(-CE/log(K))``.
+
+    For every incorrect top-1 prediction, the true-class probability is below
+    0.5 and hence its cross-entropy is greater than log(2). Therefore, if a
+    fraction ``1 - accuracy`` of examples is incorrect, the normalized score
+    cannot exceed ``exp(-(1 - accuracy) * log(2) / log(K))``. The bound is
+    intentionally non-strict because it is used as a diagnostic tolerance.
+    """
+    if not 0.0 <= accuracy <= 1.0:
+        raise ValueError("accuracy must be in [0, 1]")
+    if num_classes < 2:
+        raise ValueError("num_classes must be at least 2")
+    return float(
+        torch.exp(
+            torch.tensor(
+                -(1.0 - accuracy) * torch.log(torch.tensor(2.0))
+                / torch.log(torch.tensor(float(num_classes)))
+            )
+        ).item()
+    )
+
+
 class SkillMemory:
     """Bounded registry of immutable, independently stored model states."""
 
@@ -123,8 +146,7 @@ def _restore_initial_state(model: nn.Module, initial_state: Mapping[str, Tensor]
         else:
             raise RuntimeError(
                 f"Cannot restore scratch state for {name}: "
-                f"current shape {tuple(target.shape)}, "
-                f"initial shape {tuple(initial.shape)}"
+                f"current shape {tuple(target.shape)}, initial shape {tuple(initial.shape)}"
             )
 
 
@@ -134,30 +156,23 @@ def _origin_experience(experience):
 
 
 class ProbeCompatibilityScorer:
-    """Measure compatibility score and top-1 accuracy on the training probe.
+    """Measure compatibility score and top-1 accuracy on the training probe."""
 
-    Accuracy is the fraction of probe examples whose predicted class is correct:
-
-        A = (1 / N) * sum_i 1[argmax_j p_ij == y_i]
-
-    where p_ij are the model logits/probabilities for example i and y_i is its
-    ground-truth class. The score uses the exponential transform of the
-    cross-entropy loss:
-
-        S = exp(-CE / C)
-
-    where C is the reference loss. This gives 0 < S <= 1 for finite CE >= 0,
-    with S = 1 only when CE = 0. The score and accuracy are both measured
-    before training on the new experience and use only its deterministic
-    training probe.
-    """
-
-    def __init__(self, model_factory, loss_fn, probe_fn, reference_fn, probe_samples=64):
+    def __init__(
+        self,
+        model_factory,
+        loss_fn,
+        probe_fn,
+        reference_fn,
+        probe_samples=64,
+        num_classes=100,
+    ):
         self.model_factory = model_factory
         self.loss_fn = loss_fn
         self.probe_fn = probe_fn
         self.reference_fn = reference_fn
         self.probe_samples = probe_samples
+        self.num_classes = num_classes
 
     def __call__(self, record, experience):
         model = self.model_factory()
@@ -181,6 +196,18 @@ class ProbeCompatibilityScorer:
             score = 1.0 if loss <= 1e-8 else 0.0
         else:
             score = float(torch.exp(torch.tensor(-loss / reference)).item())
+
+        # This is a mathematical consistency check, not a decision threshold.
+        # If it fails, the probe labels/output space or score calculation is
+        # inconsistent and the benchmark should not silently continue.
+        upper_bound = max_compatible_score_for_accuracy(accuracy, self.num_classes)
+        if score > upper_bound + 1e-6:
+            raise RuntimeError(
+                "Compatibility score/accuracy inconsistency: "
+                f"score={score:.6f}, accuracy={accuracy:.6f}, "
+                f"upper_bound={upper_bound:.6f}. Check probe labels and "
+                "classifier output semantics."
+            )
         return CompatibilityResult(score=score, accuracy=accuracy)
 
 
@@ -203,6 +230,7 @@ def make_compatibility(model_factory, num_classes, probe_samples=64, probe_seed=
         probe_fn=lambda exp: make_probe(exp, probe_samples, seed=probe_seed),
         reference_fn=lambda _y: float(torch.log(torch.tensor(float(num_classes))).item()),
         probe_samples=probe_samples,
+        num_classes=num_classes,
     )
 
 
@@ -246,7 +274,6 @@ class SkillMemoryPlugin(SupervisedPlugin):
 
     @property
     def audit_log(self) -> list[dict[str, Any]]:
-        """Return decision records without exposing mutable internal entries."""
         return [dict(entry) for entry in self._audit_log]
 
     def _record_decision(self, experience, decision, record, result):
@@ -266,14 +293,6 @@ class SkillMemoryPlugin(SupervisedPlugin):
         })
 
     def _reset_optimizer(self, strategy):
-        """Rebind optimizer parameters after a dynamic module replacement.
-
-        Avalanche's dynamic adaptation can replace ``nn.Parameter`` objects.
-        Clearing optimizer state alone is insufficient because the optimizer
-        still holds references to the old parameters. Keep the existing
-        optimizer/scheduler object, but replace its parameter references with
-        the current model parameters and then discard stale state.
-        """
         optimizer = strategy.optimizer
         if optimizer is None:
             return
@@ -281,8 +300,7 @@ class SkillMemoryPlugin(SupervisedPlugin):
         current_params = list(strategy.model.parameters())
         if len(optimizer.param_groups) != 1:
             raise RuntimeError(
-                "Skill Memory optimizer rebinding currently requires exactly "
-                "one optimizer parameter group"
+                "Skill Memory optimizer rebinding currently requires exactly one optimizer parameter group"
             )
         optimizer.param_groups[0]["params"] = current_params
         optimizer.state.clear()
@@ -300,22 +318,17 @@ class SkillMemoryPlugin(SupervisedPlugin):
         return getattr(experience, "is_last_subexp", True)
 
     def _adapt_to_original_task(self, strategy, experience):
-        """Expand the classifier to the complete task after loading a skill."""
         avalanche_model_adaptation(strategy.model, _origin_experience(experience))
         self._reset_optimizer(strategy)
 
     def before_training_exp(self, strategy, **kwargs):
         experience = strategy.experience
-
         if self._task_active and not self._is_first_subexp(experience):
             return
 
         self._task_active = True
         if self._initial_state is None:
-            self._initial_state = {
-                k: v.detach().cpu().clone()
-                for k, v in strategy.model.state_dict().items()
-            }
+            self._initial_state = {k: v.detach().cpu().clone() for k, v in strategy.model.state_dict().items()}
         self.last_decision = self.SCRATCH
         self.last_selected_skill = None
         self.last_compatibility_score = 0.0
@@ -333,20 +346,9 @@ class SkillMemoryPlugin(SupervisedPlugin):
         self.last_compatibility_accuracy = result.accuracy
         decision = self.force_decision
         if decision is None:
-            # REUSE requires both a high compatibility score and high accuracy.
-            if (
-                record is not None
-                and result.score >= self.reuse_threshold
-                and result.accuracy >= self.reuse_accuracy_threshold
-            ):
+            if record is not None and result.score >= self.reuse_threshold and result.accuracy >= self.reuse_accuracy_threshold:
                 decision = self.REUSE
-            # CLONE requires both signals to clear their clone thresholds and
-            # is reached only when the stricter REUSE condition is not met.
-            elif (
-                record is not None
-                and result.score >= self.clone_threshold
-                and result.accuracy >= self.clone_accuracy_threshold
-            ):
+            elif record is not None and result.score >= self.clone_threshold and result.accuracy >= self.clone_accuracy_threshold:
                 decision = self.CLONE
             else:
                 decision = self.SCRATCH
@@ -373,7 +375,6 @@ class SkillMemoryPlugin(SupervisedPlugin):
 
     def after_training_exp(self, strategy, **kwargs):
         experience = strategy.experience
-
         if not self._is_last_subexp(experience):
             return
 
