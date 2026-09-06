@@ -1,0 +1,82 @@
+name: Skill Memory Scientific Experiment
+
+on:
+  workflow_dispatch:
+    inputs:
+      seeds:
+        description: "Comma-separated seeds"
+        required: false
+        default: "0,1,2,3,4"
+      benchmark:
+        description: "Benchmark configuration name"
+        required: false
+        default: "split_cifar100"
+
+jobs:
+  experiment:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Record environment
+        run: |
+          mkdir -p results/skill_memory_scientific/raw results/skill_memory_scientific/plots
+          python --version > results/skill_memory_scientific/environment.txt
+          pip freeze >> results/skill_memory_scientific/environment.txt
+          git rev-parse HEAD > results/skill_memory_scientific/commit.txt
+
+      - name: Run fixed-seed Skill Memory experiment
+        env:
+          SEEDS: ${{ inputs.seeds }}
+          BENCHMARK: ${{ inputs.benchmark }}
+        run: |
+          IFS=',' read -ra SEED_LIST <<< "$SEEDS"
+          for seed in "${SEED_LIST[@]}"; do
+            echo "=== Skill Memory seed ${seed} ==="
+            python experiments/main.py \
+              strategy=skill_memory \
+              experiment=${BENCHMARK} \
+              experiment.seed=${seed} \
+              experiment.results_root=${{ github.workspace }}/results/skill_memory_scientific/raw
+          done
+
+      - name: Collect and plot results
+        run: |
+          python notebooks/skill_memory_strategy_comparison.py \
+            --results-dir results/skill_memory_scientific/raw \
+            --output-dir results/skill_memory_scientific/plots
+
+      - name: Write experiment manifest
+        env:
+          SEEDS: ${{ inputs.seeds }}
+          BENCHMARK: ${{ inputs.benchmark }}
+        run: |
+          cat > results/skill_memory_scientific/manifest.txt <<EOF
+          Experiment: Skill Memory Scientific Experiment
+          Benchmark: ${BENCHMARK}
+          Seeds: ${SEEDS}
+          Strategy: skill_memory
+          Python: 3.11
+          Commit: $(git rev-parse HEAD)
+          Workflow run: ${{ github.run_id }}
+          EOF
+
+      - name: Upload experiment results and plots
+        uses: actions/upload-artifact@v4
+        with:
+          name: skill-memory-scientific-results-${{ github.run_id }}
+          path: results/skill_memory_scientific
+          if-no-files-found: error
+          retention-days: 30
