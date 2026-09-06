@@ -17,22 +17,6 @@ For each new experience, decide whether to:
 This module is intentionally framework-agnostic: it expects any object
 with a `.dataset` attribute (Avalanche experience-like) and any dataset
 that yields (x, y, task_id)-style triples.
-
-Fixes vs. the original notebook prototype
-------------------------------------------
-1. Forgetting guard: old_score / old_accuracy (already computed in
-   `imagine`) are now actually used to filter out reuse candidates whose
-   grip on old data is already weak, instead of being discarded.
-2. Absolute floor: candidate clusters must also clear an absolute
-   performance floor (better than chance), not just win on relative gap
-   size. This fixes the n==2-skills degenerate case where relative
-   clustering alone always collapses to a top-1-per-metric comparison.
-3. Multi-batch probing: probes pull several batches instead of a single
-   batch of 10, cutting decision variance; the number of batches is
-   configurable and can be seeded for reproducible studies.
-4. Optional replay-on-reuse: when a skill is reused, a small number of
-   old-data batches can be interleaved into training so reuse doesn't
-   silently overwrite what that head already knew.
 """
 
 from __future__ import annotations
