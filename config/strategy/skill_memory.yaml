@@ -3,9 +3,12 @@ defaults:
 
 name: skill_memory
 
-# Skill Memory is a native OCL Survey strategy. It uses the same benchmark,
-# optimizer, evaluation and result logging pipeline as the other methods.
+# Skill Memory uses the probe-based implementation in src/strategies/skill_memory.py.
+# REUSE, CLONE and SCRATCH remain distinct experimental decisions.
 max_skills: 20
 probe_samples: 64
+probe_batches: 5
+probe_seed: 0
 reuse_threshold: 0.90
 clone_threshold: 0.30
+forgetting_margin: 0.05
