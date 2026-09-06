@@ -2,7 +2,7 @@ import pytest
 import torch
 from torch import nn
 
-from src.strategies.skill_memory import (
+from src.strategies.skill_memory0 import (
     CompatibilityResult,
     SkillMemory,
     SkillMemoryPlugin,
