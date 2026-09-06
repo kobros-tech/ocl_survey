@@ -1,86 +1,97 @@
 name: Skill Memory Scientific Experiment
 
 on:
+  push:
+    branches:
+      - feature/skill-memory-comparison-notebook
   workflow_dispatch:
-    inputs:
-      seeds:
-        description: "Comma-separated seeds"
-        required: false
-        default: "0,1,2,3,4"
-      benchmark:
-        description: "Benchmark configuration name"
-        required: false
-        default: "split_cifar100"
+
+permissions:
+  contents: read
 
 jobs:
-  experiment:
+  benchmark:
+    name: Skill Memory seed ${{ matrix.seed }}
     runs-on: ubuntu-latest
-    timeout-minutes: 180
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
+    timeout-minutes: 360
+    strategy:
+      fail-fast: false
+      matrix:
+        seed: [0, 1, 2, 3, 4]
 
-      - name: Set up Python
+    steps:
+      - name: Check out pushed commit
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+
+      - name: Set up Python 3.11
         uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
+          python-version: '3.11'
+          cache: pip
 
-      - name: Install project dependencies
-        run: |
-          python -m pip install --upgrade pip
-          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+      - name: Install pinned dependencies
+        run: python -m pip install -r requirements.txt
 
-      - name: Record provenance
+      - name: Record run provenance
         run: |
-          mkdir -p results/skill_memory_scientific/raw results/skill_memory_scientific/plots
+          mkdir -p results/skill_memory_scientific/${{ matrix.seed }}
           {
-            echo "commit=$(git rev-parse HEAD)"
+            echo "git_commit=$(git rev-parse HEAD)"
+            echo "git_ref=${GITHUB_REF}"
+            echo "workflow_run=${GITHUB_RUN_ID}"
             echo "python=$(python --version)"
-            echo "workflow_run=${{ github.run_id }}"
-            echo "repository=${{ github.repository }}"
-          } > results/skill_memory_scientific/provenance.txt
-          pip freeze >> results/skill_memory_scientific/provenance.txt
+            echo "pip=$(python -m pip --version)"
+          } > results/skill_memory_scientific/${{ matrix.seed }}/ci_metadata.txt
 
-      - name: Run fixed-seed Skill Memory experiment
-        env:
-          SEEDS: ${{ inputs.seeds }}
-          BENCHMARK: ${{ inputs.benchmark }}
+      - name: Run Skill Memory benchmark
         run: |
-          IFS=',' read -ra SEED_LIST <<< "$SEEDS"
-          for seed in "${SEED_LIST[@]}"; do
-            echo "=== Skill Memory seed ${seed} ==="
-            python experiments/main.py \
-              strategy=skill_memory \
-              experiment=${BENCHMARK} \
-              experiment.seed=${seed} \
-              experiment.results_root=${{ github.workspace }}/results/skill_memory_scientific/raw
-          done
+          python -m experiments.main \
+            strategy=skill_memory \
+            experiment=split_cifar100 \
+            experiment.seed=${{ matrix.seed }}
 
-      - name: Index generated results
-        run: |
-          python experiments/plot_skill_memory_results.py \
-            --results-dir results/skill_memory_scientific/raw \
-            --output-dir results/skill_memory_scientific/plots
-
-      - name: Write experiment manifest
-        env:
-          SEEDS: ${{ inputs.seeds }}
-          BENCHMARK: ${{ inputs.benchmark }}
-        run: |
-          cat > results/skill_memory_scientific/manifest.txt <<EOF
-          Experiment: Skill Memory Scientific Experiment
-          Benchmark: ${BENCHMARK}
-          Seeds: ${SEEDS}
-          Strategy: skill_memory
-          Python: 3.11
-          Commit: $(git rev-parse HEAD)
-          Workflow run: ${{ github.run_id }}
-          EOF
-
-      - name: Upload experiment results and plots
+      - name: Upload seed results
+        if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: skill-memory-scientific-results-${{ github.run_id }}
+          name: skill-memory-results-seed-${{ matrix.seed }}
+          path: results/skill_memory_scientific/${{ matrix.seed }}
+          if-no-files-found: warn
+          retention-days: 30
+
+  collect-results:
+    name: Collect benchmark results
+    if: always()
+    needs: benchmark
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Download seed artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: skill-memory-results-seed-*
+          path: seed-artifacts
+          merge-multiple: false
+
+      - name: Reconstruct results directory
+        run: |
+          set -euo pipefail
+          mkdir -p results/skill_memory_scientific
+          for artifact in seed-artifacts/skill-memory-results-seed-*; do
+            [ -d "$artifact" ] || continue
+            seed="${artifact##*-}"
+            mkdir -p "results/skill_memory_scientific/${seed}"
+            cp -a "$artifact/." "results/skill_memory_scientific/${seed}/"
+          done
+          find results -maxdepth 3 -type f -print
+
+      - name: Upload consolidated results
+        uses: actions/upload-artifact@v4
+        with:
+          name: skill-memory-results
           path: results/skill_memory_scientific
-          if-no-files-found: error
+          if-no-files-found: warn
           retention-days: 30
