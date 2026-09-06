@@ -31,8 +31,11 @@ strategy:
   name: skill_memory
   max_skills: 20
   probe_samples: 64
+  probe_batches: 5
+  probe_seed: 0
   reuse_threshold: 0.9
   clone_threshold: 0.3
+  forgetting_margin: 0.05
 evaluation:
   peval_mode: experience
   parallel_evaluation: false

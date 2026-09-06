@@ -335,3 +335,22 @@ class SkillMemoryPlugin(SupervisedPlugin):
                 })
         self._seen_experiences.append(_origin_experience(experience))
         self._task_active = False
+
+    def before_eval_exp(self, strategy, **kwargs):
+        experience = strategy.experience
+        if len(self.memory) == 0:
+            return
+
+        x, y = self._probe_current(experience, seed_offset=10_000_000)
+        model_factory = lambda: deepcopy(strategy.model)
+
+        best_record, best_score = None, -float("inf")
+        for record in self.memory.records():
+            _, score, _ = _evaluate_state(
+                model_factory, record, experience, x, y, nn.functional.cross_entropy
+            )
+            if score > best_score:
+                best_record, best_score = record, score
+
+        if best_record is not None:
+            self.memory.load_into(best_record.name, strategy.model)
