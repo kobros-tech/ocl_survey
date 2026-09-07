@@ -1,0 +1,102 @@
+name: Skill Memory Scientific Experiment
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  benchmark:
+    name: Skill Memory seed ${{ matrix.seed }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    strategy:
+      fail-fast: false
+      matrix:
+        seed: [0, 1, 2, 3, 4]
+
+    steps:
+      - name: Check out pushed commit
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+
+      - name: Install pinned dependencies
+        run: python -m pip install -r requirements.txt
+
+      - name: Run Skill Memory benchmark
+        run: |
+          python -m experiments.main \
+            strategy=skill_memory \
+            experiment=split_cifar100 \
+            experiment.seed=${{ matrix.seed }}
+
+      - name: Record run provenance with experiment results
+        if: always()
+        run: |
+          set -euo pipefail
+          result_dir=$(find results -maxdepth 2 -type d -name "skill_memory_split_cifar100*" | head -n 1)
+          if [ -z "$result_dir" ]; then
+            echo "Could not locate Skill Memory result directory under results/"
+            exit 1
+          fi
+          {
+            echo "git_commit=$(git rev-parse HEAD)"
+            echo "git_ref=${GITHUB_REF}"
+            echo "workflow_run=${GITHUB_RUN_ID}"
+            echo "python=$(python --version)"
+            echo "pip=$(python -m pip --version)"
+          } > "$result_dir/${{ matrix.seed }}/ci_metadata.txt"
+          echo "Experiment results: $result_dir/${{ matrix.seed }}"
+          find "$result_dir/${{ matrix.seed }}" -maxdepth 2 -type f -print
+
+      - name: Upload complete seed experiment results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: skill-memory-results-seed-${{ matrix.seed }}
+          path: results/skill_memory_split_cifar100*/${{ matrix.seed }}
+          if-no-files-found: error
+          retention-days: 30
+
+  collect-results:
+    name: Collect benchmark results
+    if: always()
+    needs: benchmark
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Download complete seed artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: skill-memory-results-seed-*
+          path: seed-artifacts
+          merge-multiple: false
+
+      - name: Reconstruct results directory
+        run: |
+          set -euo pipefail
+          mkdir -p results
+          for artifact in seed-artifacts/skill-memory-results-seed-*; do
+            [ -d "$artifact" ] || continue
+            seed="${artifact##*-}"
+            mkdir -p "results/skill_memory_split_cifar100/${seed}"
+            cp -a "$artifact/." "results/skill_memory_split_cifar100/${seed}/"
+          done
+          find results -maxdepth 3 -type f -print
+
+      - name: Upload consolidated experiment results
+        uses: actions/upload-artifact@v4
+        with:
+          name: skill-memory-results
+          path: results/skill_memory_split_cifar100
+          if-no-files-found: error
+          retention-days: 30
