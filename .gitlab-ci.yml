@@ -1,0 +1,78 @@
+workflow:
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+    - if: '$CI_COMMIT_BRANCH'
+
+stages:
+  - benchmark
+  - collect
+
+variables:
+  PIP_CACHE_DIR: "$CI_PROJECT_DIR/.cache/pip"
+
+cache:
+  paths:
+    - .cache/pip
+
+benchmark:
+  stage: benchmark
+  image: python:3.11
+  timeout: 6h
+  when: manual
+  parallel:
+    matrix:
+      - SEED: [0, 1, 2, 3, 4]
+  before_script:
+    - python --version
+    - python -m pip install --upgrade pip
+    - python -m pip install -r requirements.txt
+  script:
+    - |
+      set -euo pipefail
+      python -m experiments.main \
+        strategy=skill_memory \
+        experiment=split_cifar100 \
+        experiment.seed="$SEED"
+  after_script:
+    - |
+      result_dir=$(find results -maxdepth 2 -type d -name "skill_memory_split_cifar100*" | head -n 1 || true)
+      if [ -n "$result_dir" ] && [ -d "$result_dir/$SEED" ]; then
+        {
+          echo "git_commit=$CI_COMMIT_SHA"
+          echo "git_ref=$CI_COMMIT_REF_NAME"
+          echo "pipeline_id=$CI_PIPELINE_ID"
+          echo "job_id=$CI_JOB_ID"
+          echo "python=$(python --version 2>&1)"
+          echo "pip=$(python -m pip --version)"
+        } > "$result_dir/$SEED/ci_metadata.txt"
+        echo "Experiment results: $result_dir/$SEED"
+        find "$result_dir/$SEED" -maxdepth 2 -type f -print
+      else
+        echo "Could not locate Skill Memory result directory for seed $SEED"
+      fi
+  artifacts:
+    when: always
+    name: "skill-memory-results-seed-$SEED"
+    paths:
+      - "results/skill_memory_split_cifar100*/$SEED/"
+    expire_in: 30 days
+
+collect-results:
+  stage: collect
+  image: alpine:3.20
+  timeout: 30m
+  when: always
+  needs:
+    - job: benchmark
+      artifacts: true
+  script:
+    - |
+      set -euo pipefail
+      mkdir -p results
+      find results -maxdepth 3 -type f -print
+  artifacts:
+    when: always
+    name: scientific-comparison-results
+    paths:
+      - results/
+    expire_in: 30 days

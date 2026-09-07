@@ -58,6 +58,14 @@ class OnlineICaRLLossPlugin(SupervisedPlugin):
             self.new_classes = set()
             self.old_model = copy.deepcopy(strategy.model)
             self.old_model.eval()
+        else:
+            # The loss plugin instance can be reused across strategy instances
+            # because OnlineICaRL's default criterion is created at definition time.
+            # The first experience has no previous model/class means to distill.
+            self.old_model = None
+            self.old_logits = None
+            self.old_classes = set()
+            self.new_classes = set()
         self.new_classes = self.new_classes.union(
             strategy.experience.classes_in_this_experience
         )
