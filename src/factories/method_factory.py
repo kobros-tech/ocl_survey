@@ -2,7 +2,6 @@
 
 import os
 from typing import List, Optional
-from copy import deepcopy
 
 import kornia.augmentation as K
 import ray
@@ -25,7 +24,7 @@ from avalanche.training.supervised.mer import MER
 from src.factories.benchmark_factory import DS_CLASSES, DS_SIZES
 from src.strategies import (ER_ACE, AGEMPlugin, LwFPlugin, OnlineICaRL,
                             OnlineICaRLLossPlugin, SkillMemoryPlugin,
-                            make_compatibility, SkillMemory)
+                            SkillMemory)
 from src.toolkit.cumulative_accuracies import CumulativeAccuracyPluginMetric
 from src.toolkit.json_logger import JSONLogger
 from src.toolkit.lambda_scheduler import LambdaScheduler
@@ -155,20 +154,16 @@ def create_strategy(
 
     elif name == "skill_memory":
         strategy = "Naive"
-        # Use a frozen copy of the freshly initialized architecture for probe scoring.
-        model_template = deepcopy(model)
         skill_memory = SkillMemory(max_skills=int(strategy_kwargs.get("max_skills", 20)))
-        compatibility = make_compatibility(
-            model_factory=lambda: deepcopy(model_template),
-            num_classes=DS_CLASSES[dataset_name],
-            probe_samples=int(strategy_kwargs.get("probe_samples", 64)),
-        )
         skill_plugin = SkillMemoryPlugin(
             memory=skill_memory,
-            compatibility=compatibility,
             max_skills=int(strategy_kwargs.get("max_skills", 20)),
-            reuse_threshold=float(strategy_kwargs.get("reuse_threshold", 0.90)),
-            clone_threshold=float(strategy_kwargs.get("clone_threshold", 0.30)),
+            forgetting_margin=float(strategy_kwargs.get("forgetting_margin", 0.05)),
+            score_floor=strategy_kwargs.get("score_floor", None),
+            probe_batch_size=int(strategy_kwargs.get("probe_batch_size", 64)),
+            probe_batches=int(strategy_kwargs.get("probe_batches", 5)),
+            probe_seed=strategy_kwargs.get("probe_seed", None),
+            replay_old_during_reuse=bool(strategy_kwargs.get("replay_old_during_reuse", False)),
         )
         plugins.append(skill_plugin)
 

@@ -4,11 +4,15 @@ defaults:
 name: skill_memory
 
 # Skill Memory uses the probe-based implementation in src/strategies/skill_memory.py.
-# REUSE, CLONE and SCRATCH remain distinct experimental decisions.
+# The reuse-vs-allocate decision is NOT governed by fixed thresholds. A skill is
+# reused only if it clears a forgetting guard on old data AND falls in the
+# strongest cluster (largest gap in sorted probe scores/accuracies) on the new
+# data, above an auto-derived floor (chance-level performance). See
+# `find_best_skill` in src/strategies/skill_memory.py for the exact rule.
+# There is no CLONE state: a reused skill keeps training, it is never frozen.
 max_skills: 20
-probe_samples: 64
+probe_batch_size: 64
 probe_batches: 5
 probe_seed: 0
-reuse_threshold: 0.90
-clone_threshold: 0.30
 forgetting_margin: 0.05
+# score_floor: null  # leave unset to auto-derive (chance-level score) per experience
