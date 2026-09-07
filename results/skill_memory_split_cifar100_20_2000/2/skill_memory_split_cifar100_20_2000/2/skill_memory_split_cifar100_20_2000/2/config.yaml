@@ -30,9 +30,11 @@ strategy:
   use_task_boundaries: true
   name: skill_memory
   max_skills: 20
-  probe_batch_size: 64
+  probe_samples: 64
   probe_batches: 5
   probe_seed: 0
+  reuse_threshold: 0.9
+  clone_threshold: 0.3
   forgetting_margin: 0.05
 evaluation:
   peval_mode: experience
@@ -54,8 +56,8 @@ evaluation:
   num_actors: 3
 experiment:
   results_root: ${hydra:runtime.cwd}/results
-  seed: 4
+  seed: 2
   save_models: false
   train_online: true
-  logdir: /home/runner/work/ocl_survey/ocl_survey/results/skill_memory_split_cifar100_20_2000/4
+  logdir: /home/runner/work/ocl_survey/ocl_survey/results/skill_memory_split_cifar100_20_2000/2
   debug: false
