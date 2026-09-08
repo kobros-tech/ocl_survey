@@ -66,10 +66,9 @@ class ResNet(nn.Module):
         self.in_planes = nf
         self.input_size = input_size
 
-        # Use the number of channels specified by the dataset. This keeps the
-        # original RGB behavior for CIFAR/ImageNet while allowing MNIST's
-        # native single-channel inputs.
-        self.conv1 = conv3x3(input_size[0], nf * 1)
+        # DS_SIZES uses the (height, width, channels) convention.
+        # Respect the dataset's actual number of input channels.
+        self.conv1 = conv3x3(input_size[2], nf * 1)
         self.bn1 = nn.BatchNorm2d(nf * 1)
         self.layer1 = self._make_layer(block, nf * 1, num_blocks[0], stride=1)
         self.layer2 = self._make_layer(block, nf * 2, num_blocks[1], stride=2)
