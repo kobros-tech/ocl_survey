@@ -59,10 +59,16 @@ def create_benchmark(
     benchmark = None
 
     if benchmark_name == "split_mnist":
-        # Avalanche 0.6.0's SplitMNIST already defines the native
-        # preprocessing pipeline. Do not pass the custom transforms here,
-        # as Avalanche would apply its transform on top of them and cause
-        # a second ToTensor() call.
+        # SlimResNet18 is the model used by this benchmark configuration and
+        # expects 32x32 RGB inputs. Avalanche 0.6.0 applies its native
+        # ToTensor transform, so only convert the MNIST PIL image to the
+        # expected spatial size/channel count here; do not call ToTensor.
+        mnist_transform = transforms.Compose(
+            [
+                transforms.Resize((32, 32)),
+                transforms.Grayscale(num_output_channels=3),
+            ]
+        )
         benchmark = SplitMNIST(
             n_experiences,
             return_task_id=return_task_id,
@@ -71,6 +77,8 @@ def create_benchmark(
             shuffle=shuffle,
             class_ids_from_zero_in_each_exp=class_ids_from_zero_in_each_exp,
             class_ids_from_zero_from_first_exp=class_ids_from_zero_from_first_exp,
+            train_transform=mnist_transform,
+            eval_transform=mnist_transform,
             dataset_root=dataset_root,
         )
 
