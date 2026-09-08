@@ -1,6 +1,9 @@
 name: Skill Memory Scientific Experiment
 
 on:
+  push:
+    branches:
+      - feature/skill-memory-comparison-notebook
   workflow_dispatch:
 
 permissions:

@@ -1,5 +1,4 @@
 from avalanche.training import LearningWithoutForgetting
-from avalanche.training.utils import at_task_boundary
 from avalanche.training.plugins.strategy_plugin import SupervisedPlugin
 
 
@@ -32,8 +31,5 @@ class LwFPlugin(SupervisedPlugin):
         Save a copy of the model after each experience and
         update self.prev_classes to include the newly learned classes.
         """
-        if (
-            at_task_boundary(strategy.experience)
-            and strategy.clock.train_exp_counter != 0
-        ):
+        if strategy.clock.train_exp_counter != 0:
             self.lwf.update(strategy.experience.origin_experience, strategy.model)

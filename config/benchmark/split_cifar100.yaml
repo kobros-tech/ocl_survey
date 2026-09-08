@@ -2,6 +2,7 @@ defaults:
   - nc_scenario.yaml
 
 dataset_name: "cifar100"
+dataset_root: ${hydra:runtime.cwd}/data
 
 factory_args:
   benchmark_name: split_cifar100

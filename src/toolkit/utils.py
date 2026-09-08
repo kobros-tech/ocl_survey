@@ -8,8 +8,7 @@ import torch
 import os
 
 from avalanche.benchmarks import dataset_benchmark
-from avalanche.benchmarks.utils import AvalancheSubset
-from avalanche.models.dynamic_modules import IncrementalClassifier
+from avalanche.models import IncrementalClassifier
 
 
 def set_seed(seed):
