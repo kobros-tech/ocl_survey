@@ -68,7 +68,6 @@ def create_benchmark(
 
         benchmark = SplitMNIST(
             n_experiences,
-            first_exp_with_half_classes=first_exp_with_half_classes,
             return_task_id=return_task_id,
             seed=seed,
             fixed_class_order=fixed_class_order,
