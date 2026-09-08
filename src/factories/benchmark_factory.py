@@ -23,7 +23,7 @@ Benchmarks factory
 """
 
 DS_SIZES = {
-    "split_mnist": (32, 32, 3),
+    "split_mnist": (32, 32, 1),
     "split_cifar10": (32, 32, 3),
     "split_cifar100": (32, 32, 3),
     "split_imagenet": (224, 224, 3),
@@ -59,16 +59,9 @@ def create_benchmark(
     benchmark = None
 
     if benchmark_name == "split_mnist":
-        # SlimResNet18 is the model used by this benchmark configuration and
-        # expects 32x32 RGB inputs. Avalanche 0.6.0 applies its native
-        # ToTensor transform, so only convert the MNIST PIL image to the
-        # expected spatial size/channel count here; do not call ToTensor.
-        mnist_transform = transforms.Compose(
-            [
-                transforms.Resize((32, 32)),
-                transforms.Grayscale(num_output_channels=3),
-            ]
-        )
+        # Avalanche 0.6.0's SplitMNIST already handles tensor conversion.
+        # Only resize here; keep MNIST's native single-channel input.
+        mnist_transform = transforms.Resize((32, 32))
         benchmark = SplitMNIST(
             n_experiences,
             return_task_id=return_task_id,
