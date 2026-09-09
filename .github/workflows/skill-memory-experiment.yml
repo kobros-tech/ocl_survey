@@ -11,15 +11,20 @@ permissions:
 
 jobs:
   benchmark:
-    name: Skill Memory seed ${{ matrix.seed }}
+    name: Seed ${{ matrix.seed }} — Skill Memory + ER
     runs-on: ubuntu-latest
     timeout-minutes: 360
+
     strategy:
       fail-fast: false
       matrix:
         seed: [0, 1, 2, 3, 4]
 
     steps:
+      # ============================================================
+      # Setup
+      # ============================================================
+
       - name: Check out pushed commit
         uses: actions/checkout@v4
         with:
@@ -35,6 +40,10 @@ jobs:
       - name: Install pinned dependencies
         run: python -m pip install -r requirements.txt
 
+      # ============================================================
+      # Skill Memory
+      # ============================================================
+
       - name: Run Skill Memory benchmark
         run: |
           python -m experiments.main \
@@ -42,64 +51,296 @@ jobs:
             experiment=split_cifar100 \
             experiment.seed=${{ matrix.seed }}
 
-      - name: Record run provenance with experiment results
+      - name: Record Skill Memory run provenance
         if: always()
         run: |
           set -euo pipefail
-          result_dir=$(find results -maxdepth 2 -type d -name "skill_memory_split_cifar100*" | head -n 1)
-          if [ -z "$result_dir" ]; then
-            echo "Could not locate Skill Memory result directory under results/"
+
+          result_dir="results/skill_memory_split_cifar100_20_2000"
+
+          if [ ! -d "$result_dir/${{ matrix.seed }}" ]; then
+            echo "Could not locate Skill Memory results:"
+            echo "$result_dir/${{ matrix.seed }}"
             exit 1
           fi
+
           {
+            echo "strategy=skill_memory"
+            echo "benchmark=split_cifar100"
+            echo "configuration=20_2000"
+            echo "seed=${{ matrix.seed }}"
             echo "git_commit=$(git rev-parse HEAD)"
             echo "git_ref=${GITHUB_REF}"
             echo "workflow_run=${GITHUB_RUN_ID}"
             echo "python=$(python --version)"
             echo "pip=$(python -m pip --version)"
           } > "$result_dir/${{ matrix.seed }}/ci_metadata.txt"
-          echo "Experiment results: $result_dir/${{ matrix.seed }}"
-          find "$result_dir/${{ matrix.seed }}" -maxdepth 2 -type f -print
 
-      - name: Upload complete seed experiment results
+          echo "Skill Memory results:"
+          echo "$result_dir/${{ matrix.seed }}"
+
+          find "$result_dir/${{ matrix.seed }}" \
+            -maxdepth 2 \
+            -type f \
+            -print
+
+      # ============================================================
+      # ER
+      # ============================================================
+
+      - name: Run ER benchmark
+        run: |
+          python -m experiments.main \
+            strategy=er \
+            experiment=split_cifar100 \
+            experiment.seed=${{ matrix.seed }}
+
+      - name: Record ER run provenance
+        if: always()
+        run: |
+          set -euo pipefail
+
+          result_dir="results/er_split_cifar100_20_2000"
+
+          if [ ! -d "$result_dir/${{ matrix.seed }}" ]; then
+            echo "Could not locate ER results:"
+            echo "$result_dir/${{ matrix.seed }}"
+            exit 1
+          fi
+
+          {
+            echo "strategy=er"
+            echo "benchmark=split_cifar100"
+            echo "configuration=20_2000"
+            echo "seed=${{ matrix.seed }}"
+            echo "git_commit=$(git rev-parse HEAD)"
+            echo "git_ref=${GITHUB_REF}"
+            echo "workflow_run=${GITHUB_RUN_ID}"
+            echo "python=$(python --version)"
+            echo "pip=$(python -m pip --version)"
+          } > "$result_dir/${{ matrix.seed }}/ci_metadata.txt"
+
+          echo "ER results:"
+          echo "$result_dir/${{ matrix.seed }}"
+
+          find "$result_dir/${{ matrix.seed }}" \
+            -maxdepth 2 \
+            -type f \
+            -print
+
+      # ============================================================
+      # Upload individual seed results
+      # ============================================================
+
+      - name: Upload Skill Memory seed results
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: skill-memory-results-seed-${{ matrix.seed }}
-          path: results/skill_memory_split_cifar100*/${{ matrix.seed }}
+          path: results/skill_memory_split_cifar100_20_2000/${{ matrix.seed }}
           if-no-files-found: error
           retention-days: 30
 
+      - name: Upload ER seed results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: er-results-seed-${{ matrix.seed }}
+          path: results/er_split_cifar100_20_2000/${{ matrix.seed }}
+          if-no-files-found: error
+          retention-days: 30
+
+  # ==================================================================
+  # Collect all seeds and create the two comparison ZIP files
+  # ==================================================================
+
   collect-results:
-    name: Collect benchmark results
+    name: Collect and package comparison results
     if: always()
     needs: benchmark
     runs-on: ubuntu-latest
 
     steps:
-      - name: Download complete seed artifacts
+
+      # ============================================================
+      # Download Skill Memory seed artifacts
+      # ============================================================
+
+      - name: Download Skill Memory seed artifacts
         uses: actions/download-artifact@v4
         with:
           pattern: skill-memory-results-seed-*
-          path: seed-artifacts
+          path: seed-artifacts/skill-memory
           merge-multiple: false
 
-      - name: Reconstruct results directory
+      # ============================================================
+      # Download ER seed artifacts
+      # ============================================================
+
+      - name: Download ER seed artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: er-results-seed-*
+          path: seed-artifacts/er
+          merge-multiple: false
+
+      # ============================================================
+      # Reconstruct both results directories
+      # ============================================================
+
+      - name: Reconstruct results directories
         run: |
           set -euo pipefail
-          mkdir -p results
-          for artifact in seed-artifacts/skill-memory-results-seed-*; do
-            [ -d "$artifact" ] || continue
-            seed="${artifact##*-}"
-            mkdir -p "results/skill_memory_split_cifar100/${seed}"
-            cp -a "$artifact/." "results/skill_memory_split_cifar100/${seed}/"
-          done
-          find results -maxdepth 3 -type f -print
 
-      - name: Upload consolidated experiment results
+          mkdir -p results/skill_memory_split_cifar100_20_2000
+          mkdir -p results/er_split_cifar100_20_2000
+
+          # ----------------------------------------------------------
+          # Skill Memory
+          # ----------------------------------------------------------
+
+          for artifact in \
+            seed-artifacts/skill-memory/skill-memory-results-seed-*; do
+
+            [ -d "$artifact" ] || continue
+
+            seed="${artifact##*-}"
+
+            mkdir -p \
+              "results/skill_memory_split_cifar100_20_2000/${seed}"
+
+            cp -a \
+              "$artifact/." \
+              "results/skill_memory_split_cifar100_20_2000/${seed}/"
+
+          done
+
+          # ----------------------------------------------------------
+          # ER
+          # ----------------------------------------------------------
+
+          for artifact in \
+            seed-artifacts/er/er-results-seed-*; do
+
+            [ -d "$artifact" ] || continue
+
+            seed="${artifact##*-}"
+
+            mkdir -p \
+              "results/er_split_cifar100_20_2000/${seed}"
+
+            cp -a \
+              "$artifact/." \
+              "results/er_split_cifar100_20_2000/${seed}/"
+
+          done
+
+          # ----------------------------------------------------------
+          # Show reconstructed structure
+          # ----------------------------------------------------------
+
+          echo ""
+          echo "========================================"
+          echo "Skill Memory results"
+          echo "========================================"
+
+          find results/skill_memory_split_cifar100_20_2000 \
+            -maxdepth 3 \
+            -type f \
+            -print
+
+          echo ""
+          echo "========================================"
+          echo "ER results"
+          echo "========================================"
+
+          find results/er_split_cifar100_20_2000 \
+            -maxdepth 3 \
+            -type f \
+            -print
+
+      # ============================================================
+      # Verify that all five seeds exist
+      # ============================================================
+
+      - name: Verify all seeds were collected
+        run: |
+          set -euo pipefail
+
+          for seed in 0 1 2 3 4; do
+
+            skill_dir="results/skill_memory_split_cifar100_20_2000/${seed}"
+            er_dir="results/er_split_cifar100_20_2000/${seed}"
+
+            if [ ! -d "$skill_dir" ]; then
+              echo "ERROR: Missing Skill Memory results for seed ${seed}"
+              exit 1
+            fi
+
+            if [ ! -d "$er_dir" ]; then
+              echo "ERROR: Missing ER results for seed ${seed}"
+              exit 1
+            fi
+
+            echo "Seed ${seed}: OK"
+
+          done
+
+          echo ""
+          echo "All five seeds successfully collected for both strategies."
+
+      # ============================================================
+      # Create Skill Memory ZIP
+      # ============================================================
+
+      - name: Create Skill Memory ZIP
+        run: |
+          set -euo pipefail
+
+          zip -r \
+            skill-memory-split-cifar100-20-2000.zip \
+            results/skill_memory_split_cifar100_20_2000
+
+          echo ""
+          echo "Created:"
+          ls -lh skill-memory-split-cifar100-20-2000.zip
+
+      # ============================================================
+      # Create ER ZIP
+      # ============================================================
+
+      - name: Create ER ZIP
+        run: |
+          set -euo pipefail
+
+          zip -r \
+            er-split-cifar100-20-2000.zip \
+            results/er_split_cifar100_20_2000
+
+          echo ""
+          echo "Created:"
+          ls -lh er-split-cifar100-20-2000.zip
+
+      # ============================================================
+      # Upload final Skill Memory ZIP
+      # ============================================================
+
+      - name: Upload Skill Memory ZIP
         uses: actions/upload-artifact@v4
         with:
-          name: skill-memory-results
-          path: results/skill_memory_split_cifar100
+          name: skill-memory-split-cifar100-20-2000
+          path: skill-memory-split-cifar100-20-2000.zip
+          if-no-files-found: error
+          retention-days: 30
+
+      # ============================================================
+      # Upload final ER ZIP
+      # ============================================================
+
+      - name: Upload ER ZIP
+        uses: actions/upload-artifact@v4
+        with:
+          name: er-split-cifar100-20-2000
+          path: er-split-cifar100-20-2000.zip
           if-no-files-found: error
           retention-days: 30

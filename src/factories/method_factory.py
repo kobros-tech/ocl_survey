@@ -159,7 +159,7 @@ def create_strategy(
             memory=skill_memory,
             max_skills=int(strategy_kwargs.get("max_skills", 20)),
             forgetting_margin=float(strategy_kwargs.get("forgetting_margin", 0.05)),
-            score_floor=strategy_kwargs.get("score_floor", None),
+            score_floor=strategy_kwargs.get("score_floor", 0.9),
             probe_batch_size=int(strategy_kwargs.get("probe_batch_size", 64)),
             probe_batches=int(strategy_kwargs.get("probe_batches", 5)),
             probe_seed=strategy_kwargs.get("probe_seed", None),

@@ -15,4 +15,4 @@ probe_batch_size: 64
 probe_batches: 5
 probe_seed: 0
 forgetting_margin: 0.05
-# score_floor: null  # leave unset to auto-derive (chance-level score) per experience
+score_floor: 0.9
