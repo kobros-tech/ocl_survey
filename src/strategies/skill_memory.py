@@ -371,6 +371,13 @@ def find_best_weight_clone(
     if n_steps < 2:
         raise ValueError("n_steps must be >= 2.")
 
+    if score_state.keys() != accuracy_state.keys():
+        return None
+
+    for key in score_state:
+        if score_state[key].shape != accuracy_state[key].shape:
+            return None
+
     if overall_fn is None:
 
         def overall_fn(score: float, accuracy: float) -> float:
