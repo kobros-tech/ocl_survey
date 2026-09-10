@@ -5,8 +5,8 @@ on:
     branches:
       - feature/skill-memory-statistical-study
   pull_request:
-    branches:
-      - feature/skill-memory-rigor-fixes
+    # branches:
+    #   - feature/skill-memory-rigor-fixes
 
 permissions:
   contents: read

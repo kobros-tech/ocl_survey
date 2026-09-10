@@ -8,8 +8,8 @@ on:
       - 'experiments/analyze_skill_memory_audit.py'
       - '.github/workflows/skill-memory-ci.yml'
   push:
-    branches:
-      - feature/skill-memory-statistical-study
+    # branches:
+    #   - feature/skill-memory-statistical-study
     paths:
       - 'src/strategies/skill_memory.py'
       - 'tests/test_skill_memory*.py'

@@ -1,4 +1,3 @@
-# %% [markdown]
 # # Skill-memory continual learning (refined)
 #
 # This is the same demo as `learn_CL_3.ipynb`, refactored to call into the
@@ -16,11 +15,12 @@
 # - optional replay-on-reuse is available via config, off by default so you
 #   can A/B it against the no-replay version
 
-# %%
 import numpy as np
 import torch
 
-from skill_memory import (
+from avalanche.benchmarks.classic import SplitMNIST
+
+from skill_memory2 import (
     SkillMemoryConfig,
     SkillClassifierBank,
     SkillMemoryStrategy,
@@ -28,7 +28,9 @@ from skill_memory import (
     compute_cl_metrics,
 )
 
-# %%
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+print("Device:", device)
+
 config = SkillMemoryConfig(
     n_skills=10,
     input_dim=784,
@@ -46,6 +48,22 @@ config = SkillMemoryConfig(
     device=str(device),
 )
 
+benchmark = SplitMNIST(
+    n_experiences=10,
+    seed=0,
+)
+
+train_stream = benchmark.train_stream
+test_stream = benchmark.test_stream
+
+print("Number of experiences:", len(train_stream))
+
+for i, exp in enumerate(train_stream):
+    print(i, sorted(exp.classes_in_this_experience), len(exp.dataset))
+
+########################################################
+########################################################
+
 model = SkillClassifierBank(config).to(config.device)
 
 optimizer = torch.optim.SGD(model.parameters(), lr=config.learning_rate)
@@ -53,7 +71,6 @@ criterion = torch.nn.CrossEntropyLoss()
 
 strategy = SkillMemoryStrategy(model, optimizer, criterion, config)
 
-# %%
 accuracy_history = []
 
 for t, train_exp in enumerate(train_stream):
@@ -68,18 +85,8 @@ for t, train_exp in enumerate(train_stream):
         f"mean seen accuracy = {np.mean(current_accuracies):.3f}"
     )
 
-# %%
 accuracy_curve, forgetting_curve = compute_cl_metrics(accuracy_history)
 
+print("\n")
 print("Accuracy:", np.round(accuracy_curve, 3))
 print("Forgetting:", np.round(forgetting_curve, 3))
-
-# %% [markdown]
-# ## Suggested next experiment
-#
-# Run this cell block twice -- once with `replay_old_during_reuse=False`
-# and once with `True` -- and compare the forgetting curves. That isolates
-# exactly what the forgetting guard buys you (safer skill *selection*) vs.
-# what replay buys you (less forgetting *during* training on a reused
-# skill), which are two different mechanisms this version now separates
-# cleanly.
