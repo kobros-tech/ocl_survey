@@ -13,7 +13,7 @@ import src.toolkit.utils as utils
 from avalanche.benchmarks import with_classes_timeline
 from avalanche.benchmarks.scenarios.online import split_online_stream
 from src.factories.benchmark_factory import DS_SIZES
-from src.strategies.skill_memory import SkillMemoryPlugin
+from src.strategies.skill_memory0 import SkillMemoryPlugin
 
 
 @hydra.main(config_path="../config", config_name="config.yaml")

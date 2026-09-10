@@ -41,6 +41,21 @@ default_cifar10_eval_transform = transforms.Compose(
     ]
 )
 
+default_mnist_train_transform = transforms.Compose([
+    transforms.Resize((32, 32)),
+    transforms.Grayscale(num_output_channels=3),
+    transforms.RandomCrop(32, padding=2),
+    transforms.ToTensor(),
+    transforms.Normalize((0.1307, 0.1307, 0.1307), (0.3081, 0.3081, 0.3081)),
+])
+
+default_mnist_eval_transform = transforms.Compose([
+    transforms.Resize((32, 32)),
+    transforms.Grayscale(num_output_channels=3),
+    transforms.ToTensor(),
+    transforms.Normalize((0.1307, 0.1307, 0.1307), (0.3081, 0.3081, 0.3081)),
+])
+
 default_tinyimagenet_train_transform = transforms.Compose(
     [
         transforms.RandomCrop(64, padding=8),
