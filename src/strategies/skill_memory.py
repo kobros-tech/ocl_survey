@@ -257,6 +257,12 @@ def find_best_skill(
 
     def strongest_candidates(results, key, floor):
         ranked = sorted(results, key=lambda r: r[key], reverse=True)
+        if len(ranked) == 1:
+            return (
+                {ranked[0]["skill"]}
+                if ranked[0][key] > floor
+                else set()
+            )
         values = [r[key] for r in ranked]
         gaps = [
             values[i] - values[i + 1]
@@ -273,9 +279,9 @@ def find_best_skill(
     # This prevents a relative winner from being reused when its absolute
     # compatibility with the new experience is still too weak.
     floor_score = (
-        score_floor
+        max(r["chance"] for r in safe_results)
         if score_floor is None
-        else max(r["chance"] for r in safe_results)
+        else score_floor
     )
 
     floor_accuracy = max(r["chance"] for r in safe_results)
