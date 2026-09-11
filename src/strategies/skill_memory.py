@@ -13,13 +13,56 @@ Training semantics are intentionally explicit:
   * REUSE starts from an existing skill, but does not overwrite that stored
     skill after training.
   * Every completed training experience is recorded in an explicit
-    experience -> skill routing table.
+    experience -> skill routing table (`_experience_to_skill`).
 
-The routing table is bookkeeping only. It is never used to decide which
-skill should be selected for a new training experience.
+That routing table is bookkeeping only. It is never used to decide which
+skill should be selected for a *new training* experience, and — after the
+correction below — it is also no longer used to decide which skill should
+be loaded at *evaluation* time by default.
 
-Evaluation-time routing loads the skill recorded for each experience and
-restores the exact pre-evaluation training state afterwards.
+--------------------------------------------------------------------------
+CORRECTION (see PR review): evaluation-time routing must not be an oracle
+--------------------------------------------------------------------------
+A previous revision of this file implemented `before_eval_exp` by looking
+up the *ground-truth* Avalanche experience index (`current_experience`)
+in `_experience_to_skill` and loading the exact skill that had been frozen
+for that experience during training:
+
+    slot = self._experience_to_skill.get(experience_index)
+    _apply_skill_state_exact(strategy.model, self.memory.state(slot))
+
+This is a genuine evaluation oracle. It does not ask the model to infer
+anything about the test batch; it asks the benchmark "which training
+experience is this officially from?" and answers with a table lookup.
+Because stored skills are immutable once written, this makes forgetting
+close to 0% by construction — not because the mechanism resists
+interference, but because interference was never possible: nothing had
+touched the frozen skill since training. That is not comparable to a
+single continually-updated model such as ER, and reporting it as though
+it were is not a fair "forgetting" comparison.
+
+The fix below removes that default behaviour and replaces it with three
+explicit, clearly-labeled `eval_routing` modes:
+
+  * "none"  (default) — no swapping at all. Evaluation scores whatever
+    state is currently sitting in `strategy.model`, exactly like ER. This
+    is the mode that should be used for the headline Skill-Memory-vs-ER
+    comparison and forgetting metric.
+
+  * "probe" — a legitimate inference-time retrieval mode. For each eval
+    experience, every stored skill's *predictive confidence* (softmax
+    entropy) is measured on the current eval batch's *inputs only* — no
+    labels, and no access to the ground-truth experience index — and the
+    most confident skill is loaded. This is a real statistical decision
+    the model makes about which skill fits, comparable to a mixture-of-
+    experts gate. It is a different mechanism from a single continual
+    model, so it should be reported as a separate result, not folded into
+    the ER-style forgetting comparison.
+
+  * "oracle" — the old ground-truth lookup, kept only as an explicit,
+    opt-in upper-bound / mechanism-validation diagnostic. It must never be
+    used to produce the number compared against ER. A loud warning is
+    logged whenever it is enabled.
 """
 
 from __future__ import annotations
@@ -27,7 +70,7 @@ from __future__ import annotations
 import logging
 from collections.abc import Callable, Mapping
 from copy import deepcopy
-from typing import Any
+from typing import Any, Literal
 
 import numpy as np
 import torch
@@ -40,6 +83,9 @@ from torch import Tensor, nn
 from torch.utils.data import ConcatDataset, DataLoader
 
 logger = logging.getLogger(__name__)
+
+EvalRouting = Literal["none", "probe", "oracle"]
+_VALID_EVAL_ROUTINGS = ("none", "probe", "oracle")
 
 
 class SkillMemory:
@@ -210,6 +256,15 @@ def _evaluate_state(
     y,
     criterion,
 ):
+    """Score a candidate skill using inputs AND labels.
+
+    This is appropriate during *training-time* decisions, where the probe
+    data comes from the current training experience and using its labels
+    to compute a compatibility score is completely legitimate (it is no
+    different from training on that data). It must never be used to route
+    at evaluation time, because that would mean selecting a model using
+    the test set's ground-truth labels.
+    """
     model = model_factory()
     _apply_skill_state(model, state_dict, experience)
     model.eval()
@@ -223,12 +278,46 @@ def _evaluate_state(
     return loss, score_from_loss(loss), accuracy
 
 
+def _predictive_entropy(
+    model_factory: Callable[[], nn.Module],
+    state_dict,
+    experience,
+    x,
+) -> float:
+    """Blind compatibility signal for eval-time retrieval.
+
+    Uses only the *inputs* of the current eval batch — never labels, and
+    never the ground-truth experience index — to measure how confidently a
+    candidate skill's model predicts on this batch. Lower mean predictive
+    entropy means the skill is more confident on this input distribution,
+    which is used as a stand-in for "this skill is a good match."
+
+    This mirrors what a real deployed system could do at inference time:
+    it has the input, not an answer key telling it which training
+    experience the input came from.
+    """
+    model = model_factory()
+    _apply_skill_state(model, state_dict, experience)
+    model.eval()
+    device = next(model.parameters()).device
+    x = x.to(device)
+    with torch.no_grad():
+        logits = model(x)
+        probs = torch.softmax(logits, dim=-1)
+        entropy = -(probs * torch.log(probs.clamp_min(1e-12))).sum(dim=-1).mean()
+    return float(entropy.item())
+
+
 def find_best_skill(
     imagination_results: list[dict[str, Any]],
     forgetting_margin: float,
     score_floor: float = 0.9,
 ):
-    """Select an existing skill only when it is safe and compatible."""
+    """Select an existing skill only when it is safe and compatible.
+
+    Used exclusively for the *training-time* REUSE/SCRATCH decision. Never
+    used for evaluation routing.
+    """
     if not imagination_results:
         return None
 
@@ -276,9 +365,7 @@ def find_best_skill(
     if not intersection:
         return None
 
-    candidates = [
-        result for result in safe_results if result["skill"] in intersection
-    ]
+    candidates = [result for result in safe_results if result["skill"] in intersection]
     return max(
         candidates,
         key=lambda result: (result["new_score"], result["new_accuracy"]),
@@ -286,7 +373,23 @@ def find_best_skill(
 
 
 class SkillMemoryPlugin(SupervisedPlugin):
-    """Probe-based, task-free Skill Memory plugin."""
+    """Probe-based, task-free Skill Memory plugin.
+
+    `eval_routing` controls what happens to `strategy.model` during
+    evaluation:
+
+      * "none"   (default, safe): no swapping. Evaluation uses whatever
+        state training left behind, exactly like ER. Use this for the
+        headline comparison against other OCL methods.
+      * "probe":  blind, statistics-only retrieval using only the current
+        eval batch's inputs (see `_predictive_entropy`). A legitimate
+        mixture-of-experts-style mechanism, but a different mechanism from
+        a single continual model — report it separately, not as the same
+        "forgetting" number as ER.
+      * "oracle": ground-truth `experience_index -> skill` lookup. Upper
+        bound / mechanism-validation only. Never use this to produce the
+        number compared against ER.
+    """
 
     REUSE, SCRATCH = "reuse", "scratch"
 
@@ -304,11 +407,17 @@ class SkillMemoryPlugin(SupervisedPlugin):
         replay_batches_per_epoch: int = 1,
         skill_name: Callable | None = None,
         force_decision: str | None = None,
+        eval_routing: EvalRouting = "none",
         verbose: bool = True,
     ):
         super().__init__()
         if force_decision not in (None, self.REUSE, self.SCRATCH):
             raise ValueError("invalid force_decision")
+        if eval_routing not in _VALID_EVAL_ROUTINGS:
+            raise ValueError(
+                f"invalid eval_routing={eval_routing!r}; "
+                f"must be one of {_VALID_EVAL_ROUTINGS}"
+            )
 
         self.memory = (
             memory if memory is not None else SkillMemory(max_skills=max_skills)
@@ -322,7 +431,18 @@ class SkillMemoryPlugin(SupervisedPlugin):
         self.replay_batches_per_epoch = replay_batches_per_epoch
         self.skill_name = skill_name
         self.force_decision = force_decision
+        self.eval_routing = eval_routing
         self.verbose = verbose
+
+        if self.eval_routing == "oracle":
+            logger.warning(
+                "SkillMemoryPlugin: eval_routing='oracle' is enabled. "
+                "This loads the skill frozen for each experience using the "
+                "ground-truth experience index and MUST NOT be used to "
+                "produce the number compared against ER or other single-"
+                "model OCL baselines. Use it only as an explicit upper-"
+                "bound / mechanism-validation diagnostic."
+            )
 
         self.last_decision = self.SCRATCH
         self.last_selected_skill: int | None = None
@@ -341,6 +461,8 @@ class SkillMemoryPlugin(SupervisedPlugin):
         self._current_training_experience_index: int | None = None
 
         # Training experience index -> skill slot.
+        # Bookkeeping / audit trail. Read at evaluation time ONLY when
+        # eval_routing == "oracle" (an explicit, non-default diagnostic).
         self._experience_to_skill: dict[int, int] = {}
 
         self._pre_eval_state: dict | None = None
@@ -381,7 +503,10 @@ class SkillMemoryPlugin(SupervisedPlugin):
 
     @staticmethod
     def _experience_index(experience) -> int | None:
-        """Return Avalanche's benchmark experience index for evaluation."""
+        """Return Avalanche's benchmark experience index.
+
+        Only ever consulted when eval_routing == 'oracle'.
+        """
         index = getattr(experience, "current_experience", None)
         if index is not None:
             return int(index)
@@ -391,6 +516,8 @@ class SkillMemoryPlugin(SupervisedPlugin):
         return None
 
     def _score_slots(self, strategy, experience) -> list[dict[str, Any]]:
+        """Training-time compatibility scoring. Uses the current TRAINING
+        experience's data (inputs and labels) — never eval/test data."""
         new_x, new_y = _probe(
             experience,
             self.probe_batch_size,
@@ -551,8 +678,7 @@ class SkillMemoryPlugin(SupervisedPlugin):
             self._scratch(strategy)
             self.last_decision = self.SCRATCH
             self._log(
-                f"\nNo compatible existing skill -> allocated skill "
-                f"{self._active_slot}"
+                f"\nNo compatible existing skill -> allocated skill {self._active_slot}"
             )
 
     def after_training_exp(self, strategy, **kwargs):
@@ -597,8 +723,11 @@ class SkillMemoryPlugin(SupervisedPlugin):
                 "stored skill left unchanged"
             )
 
-        # This is bookkeeping, not a training oracle. It records which
-        # stored skill was selected for this experience.
+        # This is bookkeeping / audit trail. It is never used to bias which
+        # skill is selected for a NEW training experience, and — as of the
+        # fix documented at the top of this file — it is also not consulted
+        # at evaluation time unless eval_routing == "oracle" is explicitly
+        # enabled for a clearly-labeled diagnostic run.
         self._experience_to_skill[experience_index] = slot
         self._seen_experiences.append(_origin_experience(experience))
 
@@ -616,29 +745,71 @@ class SkillMemoryPlugin(SupervisedPlugin):
     def before_eval_exp(self, strategy, **kwargs):
         if not self._eval_active:
             return
+        if self.eval_routing == "none":
+            # Safe default: no swapping. Evaluate whatever the continually
+            # trained model currently holds, exactly like ER.
+            return
 
         experience = strategy.experience
-        experience_index = self._experience_index(experience)
-        if experience_index is None:
+
+        if self.eval_routing == "oracle":
+            experience_index = self._experience_index(experience)
+            if experience_index is None:
+                self._log(
+                    "Evaluation experience has no current_experience index; "
+                    "keeping current model."
+                )
+                return
+            slot = self._experience_to_skill.get(experience_index)
+            if slot is None:
+                self._log(
+                    f"No stored skill for evaluation experience "
+                    f"{experience_index}; keeping current model."
+                )
+                return
+            _apply_skill_state_exact(strategy.model, self.memory.state(slot))
+            self._reset_optimizer(strategy)
             self._log(
-                "Evaluation experience has no current_experience index; "
-                "keeping current model."
+                f"[ORACLE eval_routing] experience {experience_index} -> "
+                f"skill {slot}. Do not use this run for the ER comparison."
             )
             return
 
-        slot = self._experience_to_skill.get(experience_index)
-        if slot is None:
+        if self.eval_routing == "probe":
+            if len(self.memory) == 0:
+                return
+            # Blind retrieval: use only the current eval batch's INPUTS.
+            # No labels, no ground-truth experience index.
+            eval_x, _eval_y = _probe(
+                experience,
+                self.probe_batch_size,
+                self.probe_batches,
+                self.probe_seed,
+            )
+            model_factory = lambda: deepcopy(strategy.model)
+            best_slot = None
+            best_entropy = None
+            for slot in self.memory.slots():
+                entropy = _predictive_entropy(
+                    model_factory,
+                    self.memory.state(slot),
+                    experience,
+                    eval_x,
+                )
+                if best_entropy is None or entropy < best_entropy:
+                    best_entropy = entropy
+                    best_slot = slot
+            if best_slot is None:
+                return
+            _apply_skill_state_exact(strategy.model, self.memory.state(best_slot))
+            self._reset_optimizer(strategy)
             self._log(
-                f"No stored skill for evaluation experience {experience_index}; "
-                "keeping current model."
+                f"[PROBE eval_routing] selected skill {best_slot} "
+                f"(mean predictive entropy={best_entropy:.4f}) using only "
+                "eval-batch inputs; this is a retrieval mechanism, report "
+                "it separately from the ER-style forgetting comparison."
             )
             return
-
-        _apply_skill_state_exact(strategy.model, self.memory.state(slot))
-        self._reset_optimizer(strategy)
-        self._log(
-            f"Evaluation routing: experience {experience_index} -> skill {slot}"
-        )
 
     def after_eval(self, strategy, **kwargs):
         if not self._eval_active:
