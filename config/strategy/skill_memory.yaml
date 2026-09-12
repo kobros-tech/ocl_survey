@@ -10,7 +10,7 @@ name: skill_memory
 # data, above an auto-derived floor (chance-level performance). See
 # `find_best_skill` in src/strategies/skill_memory.py for the exact rule.
 # There is no CLONE state: a reused skill keeps training, it is never frozen.
-max_skills: 20
+max_skills: 200
 probe_batch_size: 64
 probe_batches: 5
 probe_seed: 0

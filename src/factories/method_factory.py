@@ -157,7 +157,7 @@ def create_strategy(
         skill_memory = SkillMemory(max_skills=int(strategy_kwargs.get("max_skills", 20)))
         skill_plugin = SkillMemoryPlugin(
             memory=skill_memory,
-            max_skills=int(strategy_kwargs.get("max_skills", 20)),
+            max_skills=int(strategy_kwargs.get("max_skills", 200)),
             forgetting_margin=float(
                 strategy_kwargs.get("forgetting_margin", 0.05)
             ),

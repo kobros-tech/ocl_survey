@@ -21,7 +21,7 @@ from torch import Tensor
 class SkillMemory:
     """Bounded, index-addressed storage for independent skill snapshots."""
 
-    def __init__(self, max_skills: int = 20):
+    def __init__(self, max_skills: int = 200):
         if max_skills < 1:
             raise ValueError("max_skills must be positive")
         self.max_skills = max_skills

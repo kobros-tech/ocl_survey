@@ -53,7 +53,7 @@ class SkillMemoryPlugin(SupervisedPlugin):
         self,
         memory: SkillMemory | None = None,
         *,
-        max_skills: int = 20,
+        max_skills: int = 200,
         forgetting_margin: float = 0.05,
         score_floor: float | None = 0.9,
         probe_batch_size: int = 64,
