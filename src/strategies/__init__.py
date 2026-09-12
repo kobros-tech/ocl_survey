@@ -4,3 +4,13 @@ from .erace import ER_ACE
 from .lwf import LwFPlugin
 from .agem import AGEMPlugin
 from .skill_memory import SkillMemory, SkillMemoryPlugin
+
+__all__ = [
+    "OnlineICaRL",
+    "OnlineICaRLLossPlugin",
+    "ER_ACE",
+    "LwFPlugin",
+    "AGEMPlugin",
+    "SkillMemory",
+    "SkillMemoryPlugin",
+]
