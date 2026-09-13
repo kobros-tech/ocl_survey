@@ -22,27 +22,30 @@ from collections.abc import Callable
 from copy import deepcopy
 import logging
 import time
+
+import torch
 from typing import Any, Literal
 
 from avalanche.training.plugins.strategy_plugin import SupervisedPlugin
 
 from .decision import decide_class
 from .probing import (
+    route_probe_logits,
     apply_skill_state,
     apply_skill_state_exact,
     classes_in_experience,
     origin_experience,
     prepare_for_experience,
-    predictive_entropy,
-    probe_whole_experience,
+    expand_skill_logits,
+    predict_logits,
     restore_initial_state,
 )
 from .skill_registry import ClassRecord, ExperienceClassMap, SkillMemory
 from .training import train_on_class
 
 logger = logging.getLogger(__name__)
-EvalRouting = Literal["none", "probe", "oracle"]
-_VALID_EVAL_ROUTINGS = ("none", "probe", "oracle")
+EvalRouting = Literal["none", "probe", "class_oracle", "oracle"]
+_VALID_EVAL_ROUTINGS = ("none", "probe", "class_oracle", "oracle")
 
 
 class SkillMemoryPlugin(SupervisedPlugin):
@@ -66,7 +69,7 @@ class SkillMemoryPlugin(SupervisedPlugin):
         reuse_is_mutable: bool = True,
         skill_name: Callable | None = None,
         force_decision: str | None = None,
-        eval_routing: EvalRouting = "none",
+        eval_routing: EvalRouting = "probe",
         verbose: bool = True,
     ):
         super().__init__()
@@ -104,10 +107,11 @@ class SkillMemoryPlugin(SupervisedPlugin):
         self._pre_eval_state: dict | None = None
         self._eval_active = False
 
-        if eval_routing == "oracle":
+        if eval_routing in ("oracle", "class_oracle"):
             logger.warning(
-                "eval_routing='oracle' is diagnostic only and should not be "
-                "used for the headline benchmark."
+                "eval_routing=%r uses ground-truth labels for routing and is "
+                "diagnostic only, not a task-free headline result.",
+                eval_routing,
             )
 
     def _log(self, message: str) -> None:
@@ -354,15 +358,15 @@ class SkillMemoryPlugin(SupervisedPlugin):
         experience = strategy.experience
 
         if self.eval_routing == "oracle":
-            # This is intentionally only a coarse diagnostic.  A mixed
-            # eval experience may contain classes belonging to several
-            # skills, so a single global swap is not a true class oracle.
+            # Backwards-compatible coarse diagnostic: one skill for the
+            # complete evaluation experience. This is intentionally not the
+            # main class-aware evaluator because one experience can contain
+            # classes owned by several skills.
             experience_index = getattr(experience, "current_experience", None)
             if experience_index is None:
                 experience_index = getattr(experience, "experience_id", None)
             if experience_index is None:
                 return
-
             grouped = self.class_map.skills_for_experience(int(experience_index))
             if not grouped:
                 return
@@ -374,31 +378,71 @@ class SkillMemoryPlugin(SupervisedPlugin):
             )
             return
 
-        if not self.memory:
+        if self.eval_routing in ("probe", "class_oracle") and self.memory:
+            self._log(
+                f"[{self.eval_routing.upper()} eval] per-sample routing active "
+                f"for experience {getattr(experience, 'current_experience', '?')} "
+                f"({len(self.memory)} skills known)"
+            )
+
+    def after_eval_forward(self, strategy, **kwargs) -> None:
+        """Route each evaluation sample to a stored skill before metrics.
+
+        ``probe`` is label-free: it compares each sample's prediction across
+        all stored skills and uses a normalized confidence score.
+        ``class_oracle`` is diagnostic only and uses the true label to select
+        the canonical skill. Both operate on the actual minibatch, so samples
+        from different skills may coexist in one Avalanche batch.
+
+        The confidence used by ``probe`` is deliberately based on the
+        classifier output margin rather than raw entropy. Raw entropy is
+        incomparable when skill snapshots have different numbers of output
+        units, and a one-class head has identically zero entropy for every
+        input. The margin is normalized by the L2 norm of the classifier
+        weights when that structure is available.
+        """
+        if not self._eval_active or self.eval_routing not in ("probe", "class_oracle"):
+            return
+        if len(self.memory) == 0:
             return
 
-        eval_x, _ = probe_whole_experience(
-            experience,
-            self.probe_batch_size,
-            self.probe_batches,
-            self.probe_seed,
-        )
-        probe_model = deepcopy(strategy.model)  # reused across all candidates
-        best_slot, best_entropy = None, None
-        for slot in sorted(self.memory.slots()):
-            entropy = predictive_entropy(
-                probe_model, self.memory.state(slot), experience, eval_x
-            )
-            if best_entropy is None or entropy < best_entropy:
-                best_entropy, best_slot = entropy, slot
+        x, y = strategy.mbatch[0], strategy.mbatch[1]
+        device = x.device
+        slot_ids = sorted(self.memory.slots())
+        probe_model = deepcopy(strategy.model)
 
-        if best_slot is not None:
-            apply_skill_state_exact(strategy.model, self.memory.state(best_slot))
-            self._reset_optimizer(strategy)
-            self._log(
-                f"[PROBE eval diagnostic] selected skill {best_slot} "
-                f"(entropy={best_entropy:.4f})"
+        raw_skill_logits = [
+            predict_logits(probe_model, self.memory.state(slot), x)
+            for slot in slot_ids
+        ]
+        output_dim = strategy.mb_output.shape[-1]
+        per_skill_logits = [
+            expand_skill_logits(
+                logits,
+                self.memory.state(slot),
+                self.class_map.classes_for_skill(slot),
+                output_dim,
             )
+            for slot, logits in zip(slot_ids, raw_skill_logits)
+        ]
+        batch_size = x.shape[0]
+
+        if self.eval_routing == "class_oracle":
+            chosen = []
+            for label in y.detach().cpu().tolist():
+                skill = self.class_map.find_skill_for_class_anywhere(int(label))
+                chosen.append(slot_ids.index(skill) if skill in slot_ids else 0)
+            chosen = torch.tensor(chosen, device=device, dtype=torch.long)
+        else:
+            chosen = route_probe_logits(
+                raw_skill_logits,
+                [self.memory.state(slot) for slot in slot_ids],
+                [self.class_map.classes_for_skill(slot) for slot in slot_ids],
+            )
+
+        strategy.mb_output = torch.stack(per_skill_logits, dim=0)[
+            chosen, torch.arange(batch_size, device=device)
+        ]
 
     def after_eval(self, strategy, **kwargs) -> None:
         if not self._eval_active:

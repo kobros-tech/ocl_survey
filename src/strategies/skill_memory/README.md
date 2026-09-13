@@ -40,11 +40,24 @@ skill      -> all mastered classes
 
 ## Evaluation routing
 
-`eval_routing="none"` is the recommended benchmark setting.
+`eval_routing="probe"` is the default and is the task-free evaluation mode.
 
-`oracle` and `probe` remain coarse diagnostic modes that swap one skill for an
-entire evaluation experience. They are **not** class-level/sample-level
-mixture-of-experts inference and should not be used as the headline result.
+Evaluation is still performed by Avalanche experience, matching the benchmark
+protocol used by ordinary continual-learning baselines such as ER. Inside each
+physical evaluation minibatch, however, samples may be routed to different
+stored skills. The probe router does not inspect the target labels.
+
+`class_oracle` is a diagnostic upper bound: it uses the true label to select the
+canonical skill for each sample. `oracle` is retained for backwards
+compatibility and swaps one skill for a whole evaluation experience; neither
+should be reported as the task-free headline result.
+
+The probe router does not use predictive entropy directly. Entropy is
+problematic for snapshots with different classifier sizes, and a one-class
+head has identically zero entropy for every input. Instead, routing uses a
+classifier margin (or the single-class logit) normalized by the stored
+classifier weight norm. This is an input-only routing heuristic; no target
+label is used.
 
 ## Important invariant
 
