@@ -20,72 +20,45 @@ def origin_experience(experience):
     return getattr(experience, "origin_experience", experience)
 
 
-# Cache of {id(dataset): {class_id: [indices]}}, built once per dataset the
-# first time it's touched and reused for every later query.
+# Cache of {id(dataset): {class_id: [indices]}}, built once per dataset and
+# reused for every later query.
 #
-# WHY THIS EXISTS: `decide_class` probes every stored skill against every
-# seen experience for every new class. Without caching, that means the
-# WHOLE dataset gets re-decoded (every `__getitem__`, i.e. every image
-# load + transform) from scratch on every single one of those comparisons
-# -- an O(skills x seen_experiences x dataset_size) cost that compounds
-# every experience and is what actually made runs stall/time out on
-# Split-CIFAR-100 (see the CI log: each newly-reached experience took
-# longer than the last -- 20s, 70s, 146s, 267s, ... -- while every
-# previously-seen one stayed ~0.5s, which is exactly the signature of an
-# uncached O(n^2)-ish re-scan).
+# IMPORTANT: do not infer labels from a dataset's optional `.targets`
+# attribute here.  Avalanche's FlatData/Subsets can expose metadata whose
+# indexing semantics do not necessarily match the logical experience dataset.
+# The actual dataset sample is the source of truth for a class-level strategy.
+# We decode labels once per dataset and cache the resulting index map, so the
+# expensive part is still paid only once rather than once per skill/class probe.
 #
-# Safe to key by `id(dataset)`: every experience whose class this cache
-# might be asked about is kept alive for the plugin's whole lifetime via
+# Safe to key by `id(dataset)`: every experience whose class this cache might
+# be asked about is kept alive for the plugin's whole lifetime via
 # `_seen_experiences`, so its id can't be recycled out from under us.
 _CLASS_INDEX_CACHE: dict[int, dict[int, list[int]]] = {}
 
 
-def _cheap_targets(dataset):
-    """Best-effort O(1)-per-sample label access with no decoding.
-
-    Most torchvision-style datasets (and Subset wrappers around them)
-    expose a `.targets` list/array. Walk through Subset wrappers to find
-    it. Returns None if no such cheap accessor exists anywhere in the
-    chain, in which case the caller falls back to `dataset[i]` -- but
-    still only once per dataset, thanks to the cache above.
-    """
-    current = dataset
-    index_map = None  # composition of Subset .indices, outermost last
-    while True:
-        targets = getattr(current, "targets", None)
-        if targets is not None:
-            targets = list(targets)
-            if index_map is None:
-                return targets
-            return [int(targets[i]) for i in index_map]
-        if isinstance(current, Subset):
-            index_map = current.indices if index_map is None else [
-                current.indices[i] for i in index_map
-            ]
-            current = current.dataset
-            continue
-        return None
-
-
 def _class_index_map(experience) -> dict[int, list[int]]:
+    """Build the class -> sample-index map from actual dataset samples.
+
+    This deliberately avoids ``dataset.targets`` shortcuts.  The object
+    exposed by Avalanche as an experience dataset may be a nested Subset or
+    FlatData wrapper, and a metadata array can describe the underlying dataset
+    rather than the wrapper's local index space.  Using ``dataset[i][1]`` is
+    slower on the first pass, but it is unambiguous and the result is cached.
+    """
     dataset = experience.dataset
     cache_key = id(dataset)
     cached = _CLASS_INDEX_CACHE.get(cache_key)
     if cached is not None:
         return cached
 
-    targets = _cheap_targets(dataset)
     mapping: dict[int, list[int]] = {}
-    if targets is not None and len(targets) == len(dataset):
-        for index, label in enumerate(targets):
-            mapping.setdefault(int(label), []).append(index)
-    else:
-        # No cheap label accessor available anywhere in the chain: this
-        # dataset type genuinely requires decoding each sample once to
-        # read its label. Still only paid ONCE per dataset (cached),
-        # never again for every later (skill, class) comparison.
-        for index in range(len(dataset)):
-            mapping.setdefault(int(dataset[index][1]), []).append(index)
+    for index in range(len(dataset)):
+        sample = dataset[index]
+        if len(sample) < 2:
+            raise RuntimeError(
+                "Experience dataset samples must contain at least input and label"
+            )
+        mapping.setdefault(int(sample[1]), []).append(index)
 
     _CLASS_INDEX_CACHE[cache_key] = mapping
     return mapping
@@ -261,118 +234,44 @@ def evaluate_state(
     with torch.no_grad():
         logits = model(x)
         loss = float(criterion(logits, y).item())
-        accuracy = float((logits.argmax(dim=1) == y).float().mean().item())
+        predictions = logits.argmax(dim=1)
+        accuracy = float((predictions == y).float().mean().item())
     return loss, score_from_loss(loss), accuracy
 
 
-
-
-def _classifier_prefix_and_active_units(state):
-    """Find the classifier state prefix and its active class ids."""
-    for key, value in state.items():
-        if key.endswith("classifier.weight") and getattr(value, "ndim", 0) == 2:
-            prefix = key[: -len("classifier.weight")]
-            active = state.get(f"{prefix}active_units")
-            return prefix, active
-    return None, None
+def predict_logits(model, state_dict: Mapping[str, Tensor], x: Tensor) -> Tensor:
+    apply_skill_state_exact(model, state_dict)
+    model.eval()
+    device = next(model.parameters()).device
+    with torch.no_grad():
+        return model(x.to(device))
 
 
 def expand_skill_logits(
     logits: Tensor,
-    state: Mapping[str, Tensor],
-    mastered_classes,
+    state_dict: Mapping[str, Tensor],
+    skill_classes: set[int],
     output_dim: int,
 ) -> Tensor:
-    """Pad a skill's local classifier logits into the current global head.
+    """Map a skill's local head into the global output space."""
+    result = logits.new_full((logits.shape[0], output_dim), float("-inf"))
+    active = sorted(skill_classes)
+    if logits.shape[1] < len(active):
+        active = active[: logits.shape[1]]
+    if active:
+        result[:, active] = logits[:, : len(active)]
+    return result
 
-    Skill snapshots can have different classifier sizes. Metrics, however,
-    expect one common output dimension. Known class rows are copied into that
-    global space; unknown rows are set to ``-inf`` so a skill cannot win a
-    routing decision by predicting a class it never mastered.
-    """
-    if output_dim < 1:
-        raise ValueError("output_dim must be positive")
 
-    expanded = logits.new_full((logits.shape[0], output_dim), float("-inf"))
-    _, active_units = _classifier_prefix_and_active_units(state)
-    if active_units is not None:
-        class_ids = [int(v) for v in active_units.detach().cpu().tolist()]
-    else:
-        class_ids = list(range(logits.shape[1]))
-
-    # Prefer the explicit registry mapping when the snapshot's active-unit
-    # metadata is unavailable or inconsistent. This keeps skill indices and
-    # class indices conceptually separate.
-    if len(class_ids) != logits.shape[1]:
-        class_ids = sorted(int(c) for c in mastered_classes)
-
-    for row, class_id in enumerate(class_ids[: logits.shape[1]]):
-        if 0 <= class_id < output_dim:
-            expanded[:, class_id] = logits[:, row]
-    return expanded
-
-def route_probe_logits(logits_by_skill, states, mastered_classes=None):
-    """Choose one skill per sample using label-free normalized margins.
-
-    ``logits_by_skill`` contains one ``[batch, classes]`` tensor per stored
-    skill. A one-class head has no entropy/margin against a runner-up, so its
-    scalar evidence is its single logit. Multi-class heads use the top-two
-    logit margin. Both are normalized by the stored classifier weight norm to
-    reduce scale differences between independently trained skill snapshots.
-
-    ``mastered_classes`` is bookkeeping only; it is used to distinguish a
-    one-class skill from a genuinely multi-class head and is never populated
-    from evaluation targets.
-
-    This is intentionally a routing heuristic, not an accuracy oracle: no
-    target labels are inspected.
-    """
-    if not logits_by_skill:
-        raise ValueError("at least one skill is required")
-    if len(logits_by_skill) != len(states):
-        raise ValueError("logits_by_skill and states must have the same length")
-    if mastered_classes is None:
-        mastered_classes = [None] * len(states)
-    if len(mastered_classes) != len(states):
-        raise ValueError("mastered_classes and states must have the same length")
-
+def route_probe_logits(
+    raw_skill_logits: list[Tensor],
+    states: list[Mapping[str, Tensor]],
+    skill_classes: list[set[int]],
+) -> Tensor:
     scores = []
-    for logits, state, classes in zip(logits_by_skill, states, mastered_classes):
-        weight_keys = [key for key in state if key.endswith("classifier.weight")]
-        if weight_keys:
-            scale = state[weight_keys[0]].float().norm().clamp_min(1e-8)
-        else:
-            scale = logits.new_tensor(1.0)
-
+    for logits in raw_skill_logits:
         if logits.shape[1] == 1:
-            score = logits[:, 0] / scale.to(device=logits.device)
-        elif classes is not None and len(classes) == 1:
-            score = logits[:, 0] / scale.to(device=logits.device)
+            scores.append(logits[:, 0])
         else:
-            top2 = torch.topk(logits, k=2, dim=1).values
-            score = (top2[:, 0] - top2[:, 1]) / scale.to(device=logits.device)
-        scores.append(score)
-
+            scores.append(logits.max(dim=1).values)
     return torch.stack(scores, dim=0).argmax(dim=0)
-
-def predictive_entropy(model, state_dict, experience, x) -> float:
-    """Same reuse-one-scratch-model contract as `evaluate_state` above."""
-    apply_skill_state(model, state_dict, experience)
-    model.eval()
-    device = next(model.parameters()).device
-    x = x.to(device)
-    with torch.no_grad():
-        logits = model(x)
-        probs = torch.softmax(logits, dim=-1)
-        entropy = -(probs * torch.log(probs.clamp_min(1e-12))).sum(dim=-1).mean()
-    return float(entropy.item())
-
-
-def predict_logits(model, state_dict: Mapping[str, Tensor], x) -> Tensor:
-    """Return per-sample logits under one stored skill snapshot."""
-    apply_skill_state_exact(model, state_dict)
-    model.eval()
-    device = next(model.parameters()).device
-    x = x.to(device)
-    with torch.no_grad():
-        return model(x)
