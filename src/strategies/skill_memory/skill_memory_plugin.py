@@ -21,6 +21,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from copy import deepcopy
 import logging
+import time
 from typing import Any, Literal
 
 from avalanche.training.plugins.strategy_plugin import SupervisedPlugin
@@ -59,6 +60,7 @@ class SkillMemoryPlugin(SupervisedPlugin):
         probe_batch_size: int = 64,
         probe_batches: int = 5,
         probe_seed: int | None = None,
+        max_safety_candidates: int = 5,
         class_train_epochs: int = 1,
         class_train_batch_size: int = 64,
         reuse_is_mutable: bool = True,
@@ -83,6 +85,7 @@ class SkillMemoryPlugin(SupervisedPlugin):
         self.probe_batch_size = probe_batch_size
         self.probe_batches = probe_batches
         self.probe_seed = probe_seed
+        self.max_safety_candidates = max(1, int(max_safety_candidates))
         self.class_train_epochs = class_train_epochs
         self.class_train_batch_size = class_train_batch_size
         self.reuse_is_mutable = reuse_is_mutable
@@ -157,31 +160,57 @@ class SkillMemoryPlugin(SupervisedPlugin):
 
     def before_training_exp(self, strategy, **kwargs) -> None:
         experience = strategy.experience
-        if self._task_active and not self._is_first_subexp(experience):
-            return
-        self._task_active = True
+        first_subexp = self._is_first_subexp(experience)
 
-        self._current_training_experience_index = self._training_experience_count
-        self._training_experience_count += 1
-        experience_index = self._current_training_experience_index
+        # A logical Avalanche experience can be split into sub-experiences.
+        # The old implementation processed ONLY the first sub-experience,
+        # which silently dropped classes that lived in later sub-experiences.
+        # Keep one logical experience index, but process every sub-experience.
+        if first_subexp:
+            if self._task_active:
+                raise RuntimeError(
+                    "A new first sub-experience arrived while the previous "
+                    "logical experience is still active"
+                )
 
-        if self._initial_state is None:
-            self._initial_state = self._snapshot(strategy.model)
+            self._task_active = True
+            self._current_training_experience_index = self._training_experience_count
+            self._training_experience_count += 1
+            experience_index = self._current_training_experience_index
+
+            if self._initial_state is None:
+                self._initial_state = self._snapshot(strategy.model)
+
+            self.last_class_decisions[experience_index] = {}
+
+            # Never let Avalanche's normal mixed-experience loop retrain the
+            # data after our explicit class-by-class loop.
+            self._original_train_epochs = getattr(strategy, "train_epochs", None)
+            if self._original_train_epochs is not None:
+                strategy.train_epochs = 0
+        else:
+            if not self._task_active or self._current_training_experience_index is None:
+                raise RuntimeError(
+                    "Received a non-first sub-experience without an active "
+                    "logical training experience"
+                )
+            experience_index = self._current_training_experience_index
 
         classes = classes_in_experience(experience)
-        self.last_class_decisions[experience_index] = {}
-
-        # Never let Avalanche's normal mixed-experience loop retrain the
-        # data after our explicit class-by-class loop.
-        self._original_train_epochs = getattr(strategy, "train_epochs", None)
-        if self._original_train_epochs is not None:
-            strategy.train_epochs = 0
+        self._log(
+            f"Experience {experience_index} "
+            f"subexp(first={first_subexp}, last={self._is_last_subexp(experience)}): "
+            f"classes={classes}"
+        )
 
         if not classes:
-            self._log(f"Experience {experience_index}: empty dataset; nothing to train")
+            self._log(
+                f"Experience {experience_index}: empty sub-experience; nothing to train"
+            )
             return
 
         for target_class in classes:
+            decision_start = time.perf_counter()
             decision = decide_class(
                 strategy,
                 experience,
@@ -196,6 +225,11 @@ class SkillMemoryPlugin(SupervisedPlugin):
                 self.score_floor,
                 self.force_decision,
                 self._log,
+                max_safety_candidates=self.max_safety_candidates,
+            )
+            self._log(
+                f"Class {target_class}: imagination+decision "
+                f"time={time.perf_counter() - decision_start:.2f}s"
             )
 
             if decision["decision"] == self.REUSE:
@@ -264,6 +298,7 @@ class SkillMemoryPlugin(SupervisedPlugin):
                     decision=decision["decision"],
                     skill=decision["skill"],
                     new_score=decision.get("new_score", 0.0),
+                    old_score=decision.get("old_score", 0.0),
                     old_accuracy=decision.get("old_accuracy", 0.0),
                     new_accuracy=decision.get("new_accuracy", 0.0),
                 )
@@ -278,11 +313,24 @@ class SkillMemoryPlugin(SupervisedPlugin):
         if experience_index is None:
             raise RuntimeError("Missing current training experience index")
 
-        for skill, classes in self.class_map.skills_for_experience(experience_index):
+        grouped = self.class_map.skills_for_experience(experience_index)
+        for skill, classes in grouped:
             self._log(
                 f"Experience {experience_index}: skill {skill} covers "
                 f"classes {sorted(classes)}"
             )
+
+        # Explicit class -> skill view.  This is intentionally printed for
+        # every class in the logical experience, including classes that were
+        # attached to an already-existing skill.  It makes it impossible to
+        # mistake a skill index for a class index.
+        assignments = self.class_map.class_skill_for_experience(experience_index)
+        self._log(
+            f"Experience {experience_index}: class->skill "
+            + ", ".join(
+                f"{class_id}->{skill}" for class_id, skill in sorted(assignments.items())
+            )
+        )
 
         if self._original_train_epochs is not None:
             strategy.train_epochs = self._original_train_epochs

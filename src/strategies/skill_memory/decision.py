@@ -109,42 +109,59 @@ def score_class_against_skills(
     probe_batches: int,
     probe_seed: int | None,
     seen_experiences: list,
+    max_safety_candidates: int = 5,
 ) -> list[dict[str, Any]]:
-    """Probe every skill against one *new* class.
+    """Probe skills against a new class, then verify only top candidates.
 
-    New-class evidence is sampled only from ``target_class`` in the current
-    experience.  Old-skill safety is evaluated against *every class currently
-    mastered by that skill*.  The aggregate ``old_accuracy`` is the worst
-    old-class accuracy, so a mutable REUSE cannot hide forgetting of one of
-    its existing classes behind good performance on another.
+    The first stage measures the new-class compatibility of every stored skill.
+    The second stage measures the *real* old-class score/accuracy only for the
+    strongest candidates.  This keeps the safety check faithful while avoiding
+    the old O(skills * old_classes) forward-pass explosion.
     """
     new_x, new_y = probe_class(
         experience, target_class, probe_batch_size, probe_batches, probe_seed
     )
-
-    # ONE scratch model for the whole decision. Every candidate skill below
-    # just overwrites its weights (cheap) instead of deep-copying the whole
-    # module again (expensive) -- see `evaluate_state`'s docstring. This
-    # alone turns an O(num_stored_skills) number of deepcopies per class
-    # decision into exactly one.
     probe_model = deepcopy(strategy.model)
 
-    # Cache each old_class's pooled probe batch across skills: several
-    # skills can share a mastered class (or, more importantly, repeated
-    # calls across skills would otherwise redundantly rescan the same
-    # `seen_experiences` for the same class over and over).
-    old_probe_cache: dict[int, tuple] = {}
-
-    results = []
-
+    # Stage 1: new-class imagination for every skill.
+    candidates = []
     for slot in sorted(memory.slots()):
         state_dict = memory.state(slot)
         mastered_classes = sorted(class_map.classes_for_skill(slot))
         if not mastered_classes:
             continue
 
+        new_loss, new_score, new_accuracy = evaluate_state(
+            probe_model,
+            state_dict,
+            new_x,
+            new_y,
+            nn.functional.cross_entropy,
+            experience,
+        )
+        out_features = incremental_out_features(strategy.model, state_dict)
+        chance = 1.0 / out_features if out_features else 0.0
+        candidates.append(
+            {
+                "skill": slot,
+                "class": target_class,
+                "old_classes": mastered_classes,
+                "new_loss": new_loss,
+                "new_score": new_score,
+                "new_accuracy": new_accuracy,
+                "chance": chance,
+            }
+        )
+
+    # Stage 2: only top new-class candidates pay the old-class safety cost.
+    candidates.sort(key=lambda r: (r["new_score"], r["new_accuracy"]), reverse=True)
+    safety_candidates = candidates[: max(1, max_safety_candidates)]
+
+    old_probe_cache: dict[int, tuple | None] = {}
+    results = []
+    for result in safety_candidates:
         old_metrics = []
-        for old_class in mastered_classes:
+        for old_class in result["old_classes"]:
             if old_class not in old_probe_cache:
                 old_experience = _first_experience_with_class(
                     seen_experiences, old_class
@@ -160,7 +177,9 @@ def score_class_against_skills(
                                 old_class,
                                 probe_batch_size,
                                 probe_batches,
-                                None if probe_seed is None else probe_seed + 100003 + old_class,
+                                None
+                                if probe_seed is None
+                                else probe_seed + 100003 + old_class,
                             ),
                         )
                     except RuntimeError:
@@ -171,10 +190,9 @@ def score_class_against_skills(
                 old_metrics = []
                 break
             old_experience, old_x, old_y = cached
-
             old_loss, old_score, old_accuracy = evaluate_state(
                 probe_model,
-                state_dict,
+                memory.state(result["skill"]),
                 old_x,
                 old_y,
                 nn.functional.cross_entropy,
@@ -192,32 +210,16 @@ def score_class_against_skills(
         if not old_metrics:
             continue
 
-        new_loss, new_score, new_accuracy = evaluate_state(
-            probe_model,
-            state_dict,
-            new_x,
-            new_y,
-            nn.functional.cross_entropy,
-            experience,
-        )
-        out_features = incremental_out_features(strategy.model, state_dict)
-        chance = 1.0 / out_features if out_features else 0.0
+        result = dict(result)
+        result["old_metrics"] = old_metrics
+        # These are REAL measured values on the stored skill's old classes.
+        # Use the worst mastered class so one forgotten class cannot be hidden.
+        result["old_accuracy"] = min(m["accuracy"] for m in old_metrics)
+        result["old_score"] = min(m["score"] for m in old_metrics)
+        results.append(result)
 
-        results.append(
-            {
-                "skill": slot,
-                "class": target_class,
-                "old_classes": mastered_classes,
-                "old_metrics": old_metrics,
-                "old_accuracy": min(m["accuracy"] for m in old_metrics),
-                "old_score": min(m["score"] for m in old_metrics),
-                "new_loss": new_loss,
-                "new_score": new_score,
-                "new_accuracy": new_accuracy,
-                "chance": chance,
-            }
-        )
-
+    # Keep the result order deterministic and put the strongest candidate first.
+    results.sort(key=lambda r: (r["new_score"], r["new_accuracy"]), reverse=True)
     return results
 
 
@@ -228,6 +230,7 @@ def known_class_decision(target_class: int, skill: int) -> dict[str, Any]:
         "decision": "reuse",
         "skill": skill,
         "new_score": 0.0,
+        "old_score": 0.0,
         "old_accuracy": 0.0,
         "new_accuracy": 0.0,
         "results": [],
@@ -249,6 +252,7 @@ def decide_class(
     score_floor: float | None,
     force_decision: str | None,
     logger_fn,
+    max_safety_candidates: int = 5,
 ) -> dict[str, Any]:
     """Decide for one class, never for an entire multi-class experience.
 
@@ -274,10 +278,15 @@ def decide_class(
         probe_batches,
         probe_seed,
         seen_experiences,
+        max_safety_candidates=max_safety_candidates,
     )
 
     logger_fn(f"\nImagination for class {target_class}:")
     for result in results:
+        old_detail = ", ".join(
+            f"class {m['class']}: score={m['score']:.3f}, acc={m['accuracy']:.3f}"
+            for m in result.get("old_metrics", [])
+        )
         logger_fn(
             f"  skill {result['skill']} (classes={result['old_classes']}): "
             f"old_score={result['old_score']:.3f}, "
@@ -285,6 +294,7 @@ def decide_class(
             f"new_score={result['new_score']:.3f}, "
             f"new_acc={result['new_accuracy']:.3f}"
         )
+        logger_fn(f"    old-by-class: {old_detail}")
 
     best = None
     if force_decision is None:
@@ -297,6 +307,7 @@ def decide_class(
         "decision": "scratch",
         "skill": None,
         "new_score": 0.0,
+        "old_score": 0.0,
         "old_accuracy": 0.0,
         "new_accuracy": 0.0,
         "results": results,
@@ -309,6 +320,7 @@ def decide_class(
                 "decision": "reuse",
                 "skill": best["skill"],
                 "new_score": best["new_score"],
+                "old_score": best["old_score"],
                 "old_accuracy": best["old_accuracy"],
                 "new_accuracy": best["new_accuracy"],
             }

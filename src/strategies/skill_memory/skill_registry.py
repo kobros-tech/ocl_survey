@@ -69,6 +69,7 @@ class ClassRecord:
     decision: str
     skill: int
     new_score: float = 0.0
+    old_score: float = 0.0
     old_accuracy: float = 0.0
     new_accuracy: float = 0.0
 
@@ -126,3 +127,10 @@ class ExperienceClassMap:
         for class_id, record in self._by_experience.get(experience_index, {}).items():
             grouped.setdefault(record.skill, set()).add(class_id)
         return list(grouped.items())
+
+    def class_skill_for_experience(self, experience_index: int) -> dict[int, int]:
+        """Return the complete ``class -> skill`` mapping for one experience."""
+        return {
+            class_id: record.skill
+            for class_id, record in self._by_experience.get(experience_index, {}).items()
+        }

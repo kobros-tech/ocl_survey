@@ -9,7 +9,7 @@ unit.
 For an experience containing classes `{c1, c2, ...}`:
 
 1. Extract the labels actually present in `experience.dataset`.
-2. Process each class independently.
+2. Process each class independently, including classes found in later sub-experiences of the same logical experience.
 3. If the class has already been mastered, use its canonical `class -> skill`
    mapping. It is not re-assigned by the generic probe heuristic.
 4. For a genuinely new class, probe each stored skill using only that class's
