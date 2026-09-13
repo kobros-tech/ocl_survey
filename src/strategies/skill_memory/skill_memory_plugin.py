@@ -242,7 +242,14 @@ class SkillMemoryPlugin(SupervisedPlugin):
                     f"Class {target_class}: REUSE skill {skill} "
                     f"(mutable={self.reuse_is_mutable})"
                 )
-                apply_skill_state(strategy.model, self.memory.state(skill), experience)
+                # A canonical class is already known to belong to this skill.
+                # Restore its snapshot exactly: re-adapting the model to the
+                # current sub-experience can traverse incompatible FlatData
+                # indices and is unnecessary for deterministic class reuse.
+                apply_skill_state_exact(
+                    strategy.model,
+                    self.memory.state(skill),
+                )
                 self._reset_optimizer(strategy)
 
                 if self.reuse_is_mutable:
