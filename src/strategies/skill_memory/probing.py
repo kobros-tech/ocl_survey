@@ -20,36 +20,27 @@ def origin_experience(experience):
     return getattr(experience, "origin_experience", experience)
 
 
-# Cache of {id(dataset): {class_id: [indices]}}, built once per dataset and
-# reused for every later query.
+# Cache of {id(dataset): (dataset, {class_id: [indices]})}. Keeping the
+# dataset object in the value prevents Python from recycling its id while a
+# stale cache entry is still alive. This matters for Avalanche sub-experiences:
+# their dataset wrappers can be short-lived even though the logical experience
+# continues across several sub-experiences.
 #
-# IMPORTANT: do not infer labels from a dataset's optional `.targets`
-# attribute here.  Avalanche's FlatData/Subsets can expose metadata whose
+# Labels are read from the actual dataset samples rather than an optional
+# `.targets` attribute. Avalanche's FlatData/Subsets can expose metadata whose
 # indexing semantics do not necessarily match the logical experience dataset.
-# The actual dataset sample is the source of truth for a class-level strategy.
-# We decode labels once per dataset and cache the resulting index map, so the
-# expensive part is still paid only once rather than once per skill/class probe.
-#
-# Safe to key by `id(dataset)`: every experience whose class this cache might
-# be asked about is kept alive for the plugin's whole lifetime via
-# `_seen_experiences`, so its id can't be recycled out from under us.
-_CLASS_INDEX_CACHE: dict[int, dict[int, list[int]]] = {}
+_CLASS_INDEX_CACHE: dict[int, tuple[object, dict[int, list[int]]]] = {}
 
 
 def _class_index_map(experience) -> dict[int, list[int]]:
-    """Build the class -> sample-index map from actual dataset samples.
-
-    This deliberately avoids ``dataset.targets`` shortcuts.  The object
-    exposed by Avalanche as an experience dataset may be a nested Subset or
-    FlatData wrapper, and a metadata array can describe the underlying dataset
-    rather than the wrapper's local index space.  Using ``dataset[i][1]`` is
-    slower on the first pass, but it is unambiguous and the result is cached.
-    """
+    """Build the class -> sample-index map from actual dataset samples."""
     dataset = experience.dataset
     cache_key = id(dataset)
     cached = _CLASS_INDEX_CACHE.get(cache_key)
     if cached is not None:
-        return cached
+        cached_dataset, mapping = cached
+        if cached_dataset is dataset:
+            return mapping
 
     mapping: dict[int, list[int]] = {}
     for index in range(len(dataset)):
@@ -60,7 +51,7 @@ def _class_index_map(experience) -> dict[int, list[int]]:
             )
         mapping.setdefault(int(sample[1]), []).append(index)
 
-    _CLASS_INDEX_CACHE[cache_key] = mapping
+    _CLASS_INDEX_CACHE[cache_key] = (dataset, mapping)
     return mapping
 
 
