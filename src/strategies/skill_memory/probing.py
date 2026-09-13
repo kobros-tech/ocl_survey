@@ -20,6 +20,77 @@ def origin_experience(experience):
     return getattr(experience, "origin_experience", experience)
 
 
+# Cache of {id(dataset): {class_id: [indices]}}, built once per dataset the
+# first time it's touched and reused for every later query.
+#
+# WHY THIS EXISTS: `decide_class` probes every stored skill against every
+# seen experience for every new class. Without caching, that means the
+# WHOLE dataset gets re-decoded (every `__getitem__`, i.e. every image
+# load + transform) from scratch on every single one of those comparisons
+# -- an O(skills x seen_experiences x dataset_size) cost that compounds
+# every experience and is what actually made runs stall/time out on
+# Split-CIFAR-100 (see the CI log: each newly-reached experience took
+# longer than the last -- 20s, 70s, 146s, 267s, ... -- while every
+# previously-seen one stayed ~0.5s, which is exactly the signature of an
+# uncached O(n^2)-ish re-scan).
+#
+# Safe to key by `id(dataset)`: every experience whose class this cache
+# might be asked about is kept alive for the plugin's whole lifetime via
+# `_seen_experiences`, so its id can't be recycled out from under us.
+_CLASS_INDEX_CACHE: dict[int, dict[int, list[int]]] = {}
+
+
+def _cheap_targets(dataset):
+    """Best-effort O(1)-per-sample label access with no decoding.
+
+    Most torchvision-style datasets (and Subset wrappers around them)
+    expose a `.targets` list/array. Walk through Subset wrappers to find
+    it. Returns None if no such cheap accessor exists anywhere in the
+    chain, in which case the caller falls back to `dataset[i]` -- but
+    still only once per dataset, thanks to the cache above.
+    """
+    current = dataset
+    index_map = None  # composition of Subset .indices, outermost last
+    while True:
+        targets = getattr(current, "targets", None)
+        if targets is not None:
+            targets = list(targets)
+            if index_map is None:
+                return targets
+            return [int(targets[i]) for i in index_map]
+        if isinstance(current, Subset):
+            index_map = current.indices if index_map is None else [
+                current.indices[i] for i in index_map
+            ]
+            current = current.dataset
+            continue
+        return None
+
+
+def _class_index_map(experience) -> dict[int, list[int]]:
+    dataset = experience.dataset
+    cache_key = id(dataset)
+    cached = _CLASS_INDEX_CACHE.get(cache_key)
+    if cached is not None:
+        return cached
+
+    targets = _cheap_targets(dataset)
+    mapping: dict[int, list[int]] = {}
+    if targets is not None and len(targets) == len(dataset):
+        for index, label in enumerate(targets):
+            mapping.setdefault(int(label), []).append(index)
+    else:
+        # No cheap label accessor available anywhere in the chain: this
+        # dataset type genuinely requires decoding each sample once to
+        # read its label. Still only paid ONCE per dataset (cached),
+        # never again for every later (skill, class) comparison.
+        for index in range(len(dataset)):
+            mapping.setdefault(int(dataset[index][1]), []).append(index)
+
+    _CLASS_INDEX_CACHE[cache_key] = mapping
+    return mapping
+
+
 def classes_in_experience(experience) -> list[int]:
     """Return the distinct labels actually present in the dataset.
 
@@ -27,25 +98,16 @@ def classes_in_experience(experience) -> list[int]:
     experience-level class declaration.  That prevents routing decisions
     from being based on metadata that can disagree with the samples.
     """
-    classes: set[int] = set()
-    dataset = experience.dataset
-    for index in range(len(dataset)):
-        sample = dataset[index]
-        classes.add(int(sample[1]))
-    return sorted(classes)
+    return sorted(_class_index_map(experience))
 
 
 def class_indices(experience, target_class: int) -> list[int]:
-    dataset = experience.dataset
-    indices = []
-    for index in range(len(dataset)):
-        if int(dataset[index][1]) == int(target_class):
-            indices.append(index)
+    indices = _class_index_map(experience).get(int(target_class))
     if not indices:
         raise RuntimeError(
             f"class {target_class} has no samples in this experience"
         )
-    return indices
+    return list(indices)
 
 
 def class_subset(experience, target_class: int) -> Subset:
@@ -173,15 +235,23 @@ def apply_skill_state_exact(model: nn.Module, state_dict: Mapping[str, Tensor]) 
 
 
 def evaluate_state(
-    model_factory, state_dict, x, y, criterion, adaptation_experience=None
+    model, state_dict, x, y, criterion, adaptation_experience=None
 ) -> tuple[float, float, float]:
     """Evaluate a stored snapshot on already-filtered class data.
+
+    ``model`` is a scratch module the caller builds ONCE (e.g. one
+    `deepcopy(strategy.model)` per decision) and reuses across every
+    candidate skill being scored; this function just overwrites its
+    weights in place via `load_state_dict` rather than deep-copying the
+    whole module again per candidate. Deep-copying a full model is far
+    more expensive than swapping a state_dict, and doing it once per
+    skill instead of once per decision is what made per-class decisions
+    scale with the total number of stored skills.
 
     If the snapshot predates the current class head, ``adaptation_experience``
     is used only to grow the Avalanche dynamic head.  The probe data itself
     must already be class-filtered; the experience is never sampled here.
     """
-    model = model_factory()
     apply_skill_state_exact(model, state_dict)
     if adaptation_experience is not None:
         prepare_for_experience(model, adaptation_experience)
@@ -195,8 +265,8 @@ def evaluate_state(
     return loss, score_from_loss(loss), accuracy
 
 
-def predictive_entropy(model_factory, state_dict, experience, x) -> float:
-    model = model_factory()
+def predictive_entropy(model, state_dict, experience, x) -> float:
+    """Same reuse-one-scratch-model contract as `evaluate_state` above."""
     apply_skill_state(model, state_dict, experience)
     model.eval()
     device = next(model.parameters()).device

@@ -121,7 +121,20 @@ def score_class_against_skills(
     new_x, new_y = probe_class(
         experience, target_class, probe_batch_size, probe_batches, probe_seed
     )
-    model_factory = lambda: deepcopy(strategy.model)
+
+    # ONE scratch model for the whole decision. Every candidate skill below
+    # just overwrites its weights (cheap) instead of deep-copying the whole
+    # module again (expensive) -- see `evaluate_state`'s docstring. This
+    # alone turns an O(num_stored_skills) number of deepcopies per class
+    # decision into exactly one.
+    probe_model = deepcopy(strategy.model)
+
+    # Cache each old_class's pooled probe batch across skills: several
+    # skills can share a mastered class (or, more importantly, repeated
+    # calls across skills would otherwise redundantly rescan the same
+    # `seen_experiences` for the same class over and over).
+    old_probe_cache: dict[int, tuple] = {}
+
     results = []
 
     for slot in sorted(memory.slots()):
@@ -132,25 +145,35 @@ def score_class_against_skills(
 
         old_metrics = []
         for old_class in mastered_classes:
-            old_experience = _first_experience_with_class(
-                seen_experiences, old_class
-            )
-            if old_experience is None:
-                old_metrics = []
-                break
-            try:
-                old_x, old_y = _probe_class_across(
-                    seen_experiences,
-                    old_class,
-                    probe_batch_size,
-                    probe_batches,
-                    None if probe_seed is None else probe_seed + 100003 + old_class,
+            if old_class not in old_probe_cache:
+                old_experience = _first_experience_with_class(
+                    seen_experiences, old_class
                 )
-            except RuntimeError:
+                if old_experience is None:
+                    old_probe_cache[old_class] = None
+                else:
+                    try:
+                        old_probe_cache[old_class] = (
+                            old_experience,
+                            *_probe_class_across(
+                                seen_experiences,
+                                old_class,
+                                probe_batch_size,
+                                probe_batches,
+                                None if probe_seed is None else probe_seed + 100003 + old_class,
+                            ),
+                        )
+                    except RuntimeError:
+                        old_probe_cache[old_class] = None
+
+            cached = old_probe_cache[old_class]
+            if cached is None:
                 old_metrics = []
                 break
+            old_experience, old_x, old_y = cached
+
             old_loss, old_score, old_accuracy = evaluate_state(
-                model_factory,
+                probe_model,
                 state_dict,
                 old_x,
                 old_y,
@@ -170,7 +193,7 @@ def score_class_against_skills(
             continue
 
         new_loss, new_score, new_accuracy = evaluate_state(
-            model_factory,
+            probe_model,
             state_dict,
             new_x,
             new_y,
@@ -257,6 +280,7 @@ def decide_class(
     for result in results:
         logger_fn(
             f"  skill {result['skill']} (classes={result['old_classes']}): "
+            f"old_score={result['old_score']:.3f}, "
             f"old_acc={result['old_accuracy']:.3f}, "
             f"new_score={result['new_score']:.3f}, "
             f"new_acc={result['new_accuracy']:.3f}"

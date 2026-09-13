@@ -335,11 +335,11 @@ class SkillMemoryPlugin(SupervisedPlugin):
             self.probe_batches,
             self.probe_seed,
         )
-        model_factory = lambda: deepcopy(strategy.model)
+        probe_model = deepcopy(strategy.model)  # reused across all candidates
         best_slot, best_entropy = None, None
         for slot in sorted(self.memory.slots()):
             entropy = predictive_entropy(
-                model_factory, self.memory.state(slot), experience, eval_x
+                probe_model, self.memory.state(slot), experience, eval_x
             )
             if best_entropy is None or entropy < best_entropy:
                 best_entropy, best_slot = entropy, slot
