@@ -377,9 +377,8 @@ class SkillMemoryPlugin(SupervisedPlugin):
             apply_skill_state_exact(strategy.model, self.memory.state(skill))
             self._reset_optimizer(strategy)
             self._log(
-                ("[ORACLE eval diagnostic] experience ")(
-                    f"{experience_index} -> skill {skill}"
-                )
+                "[ORACLE eval diagnostic] experience "
+                f"{experience_index} -> skill {skill}"
             )
             return
 
@@ -494,15 +493,14 @@ class SkillMemoryPlugin(SupervisedPlugin):
         total = len(labels)
         routing_acc = agree / total if total else float("nan")
         self._log(
-            ("[PROBE routing diagnostic] batch")(
-                f" routing_accuracy={routing_acc:.4f} "
-            )(f"({agree}/{total} samples ")(
-                "routed to the same skill class_oracle would pick)"
-            )
+            "[PROBE routing diagnostic] batch "
+            f"routing_accuracy={routing_acc:.4f} "
+            f"({agree}/{total} samples routed to the same skill "
+            "class_oracle would pick)"
         )
         if mismatches:
             sample = mismatches[:5]
             self._log(
-                f"[PROBE routing diagnostic] sample mismatches "
+                "[PROBE routing diagnostic] sample mismatches "
                 f"(label, oracle_skill, probe_skill): {sample}"
             )
