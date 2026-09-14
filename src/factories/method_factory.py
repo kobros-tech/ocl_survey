@@ -179,7 +179,7 @@ def create_strategy(
                 strategy_kwargs.get("reuse_is_mutable", True)
             ),
             force_decision=strategy_kwargs.get("force_decision", None),
-            eval_routing=strategy_kwargs.get("eval_routing", "class_oracle"),
+            eval_routing=strategy_kwargs.get("eval_routing", "probe"),
             verbose=bool(strategy_kwargs.get("verbose", True)),
         )
         plugins.append(skill_plugin)
