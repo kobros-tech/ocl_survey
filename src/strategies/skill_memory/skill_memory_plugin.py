@@ -26,6 +26,7 @@ from typing import Any, Literal
 
 import torch
 from avalanche.training.plugins.strategy_plugin import SupervisedPlugin
+from torch import Tensor
 
 from .decision import decide_class
 from .probing import (
@@ -376,8 +377,9 @@ class SkillMemoryPlugin(SupervisedPlugin):
             apply_skill_state_exact(strategy.model, self.memory.state(skill))
             self._reset_optimizer(strategy)
             self._log(
-                "[ORACLE eval diagnostic] experience "
-                f"{experience_index} -> skill {skill}"
+                ("[ORACLE eval diagnostic] experience ")(
+                    f"{experience_index} -> skill {skill}"
+                )
             )
             return
 
@@ -441,6 +443,7 @@ class SkillMemoryPlugin(SupervisedPlugin):
                 [self.memory.state(slot) for slot in slot_ids],
                 [self.class_map.classes_for_skill(slot) for slot in slot_ids],
             )
+            self._log_probe_routing_diagnostic(y, chosen, slot_ids)
 
         strategy.mb_output = torch.stack(per_skill_logits, dim=0)[
             chosen, torch.arange(batch_size, device=device)
@@ -456,3 +459,50 @@ class SkillMemoryPlugin(SupervisedPlugin):
         finally:
             self._pre_eval_state = None
             self._eval_active = False
+
+    def _log_probe_routing_diagnostic(
+        self, y: Tensor, chosen: Tensor, slot_ids: list[int]
+    ) -> None:
+        """Log probe-vs-oracle skill-selection agreement for this batch.
+
+        This measures routing quality in isolation, separate from the
+        combined probe accuracy number. It answers: "even ignoring
+        whether the final prediction was correct, did probe pick the
+        SAME skill that class_oracle would have picked?" That number
+        distinguishes a routing problem (skills are fine, wrong one
+        got picked) from a skill-quality problem (right skill picked,
+        but its prediction was still wrong).
+
+        This is purely additive logging -- it does not change routing,
+        predictions, or metrics. Safe to run alongside a normal
+        `eval_routing="probe"` pass.
+        """
+        labels = y.detach().cpu().tolist()
+        chosen_list = chosen.detach().cpu().tolist()
+        agree = 0
+        mismatches = []
+        for label, chosen_idx in zip(labels, chosen_list, strict=False):
+            oracle_skill = self.class_map.find_skill_for_class_anywhere(int(label))
+            oracle_idx = (
+                slot_ids.index(oracle_skill) if oracle_skill in slot_ids else None
+            )
+            probe_skill = slot_ids[chosen_idx]
+            if oracle_idx is not None and chosen_idx == oracle_idx:
+                agree += 1
+            else:
+                mismatches.append((int(label), oracle_skill, probe_skill))
+        total = len(labels)
+        routing_acc = agree / total if total else float("nan")
+        self._log(
+            ("[PROBE routing diagnostic] batch")(
+                f" routing_accuracy={routing_acc:.4f} "
+            )(f"({agree}/{total} samples ")(
+                "routed to the same skill class_oracle would pick)"
+            )
+        )
+        if mismatches:
+            sample = mismatches[:5]
+            self._log(
+                f"[PROBE routing diagnostic] sample mismatches "
+                f"(label, oracle_skill, probe_skill): {sample}"
+            )

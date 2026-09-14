@@ -110,11 +110,7 @@ def _sample_batches(dataset, batch_size: int, n_batches: int, seed: int | None):
 
 
 def probe_class(
-    experience,
-    target_class: int,
-    batch_size: int,
-    n_batches: int,
-    seed=None,
+    experience, target_class: int, batch_size: int, n_batches: int, seed=None
 ):
     return _sample_batches(
         class_subset(experience, target_class), batch_size, n_batches, seed
@@ -257,13 +253,64 @@ def expand_skill_logits(
     skill_classes: set[int],
     output_dim: int,
 ) -> Tensor:
-    """Pad global classifier logits without remapping class columns."""
-    del state_dict, skill_classes
+    """Pad a skill's raw logits out to the global output width.
 
+    IMPORTANT: this does NOT remap columns. The model's classifier is
+    Avalanche's IncrementalClassifier, a single shared growing head
+    where column index already equals the actual global class id
+    (confirmed by `train_on_class`, which computes
+    ``cross_entropy(strategy.model(x), y)`` with `y` as the real global
+    label -- that is only meaningful if column i is class i's logit).
+
+    A previous version of this function assumed each skill had a
+    compact *local* head and remapped `sorted(skill_classes)` onto
+    `logits[:, :len(active)]`. That was wrong: for a skill owning class
+    87, it took column 0 (always class 0's logit, since class 0 was the
+    first unit ever added to the shared head) and wrote it into column
+    87, discarding the real class-87 logit sitting untouched at its own
+    column. Since most skills own exactly one class, this silently
+    corrupted the expanded logits for nearly every sample, which is why
+    probe-routed accuracy collapsed to chance level. `skill_classes` is
+    kept as a parameter for API/logging compatibility but is
+    intentionally unused now.
+
+    Unowned classes (columns beyond this skill's own raw output width)
+    are padded with a large-but-finite sentinel (-1e4) rather than
+    -inf. A true -inf logit makes cross-entropy exactly +inf for any
+    sample misrouted onto a skill that doesn't own its true class
+    (which `probe` routing does sometimes, since it has no label to
+    route by). +inf loss is not JSON-serializable via stdlib
+    json.dumps in a spec-compliant way (it round-trips as the literal
+    token `Infinity`, which strict parsers like orjson reject), and it
+    also poisons any running/streamed average (inf + anything = inf).
+    -1e4 still dominates the loss for a misrouted sample (cross-entropy
+    ~1e4 vs. ~1-10 for a correctly routed sample), so the diagnostic
+    signal that routing failed is preserved, but the value stays
+    finite.
+    """
     result = logits.new_full((logits.shape[0], output_dim), -1e4)
     width = min(logits.shape[1], output_dim)
     result[:, :width] = logits[:, :width]
     return result
+
+
+def _classifier_weight_norm(
+    state: Mapping[str, Tensor],
+    class_ids: list[int],
+) -> float:
+    """Return the L2 norm of classifier weights for owned classes."""
+    for key, value in state.items():
+        if not key.endswith("classifier.weight") or value.ndim != 2:
+            continue
+
+        valid = [class_id for class_id in class_ids if 0 <= class_id < value.shape[0]]
+        if not valid:
+            return 1.0
+
+        norm = float(value[valid].norm().item())
+        return norm if norm > 1e-8 else 1.0
+
+    return 1.0
 
 
 def route_probe_logits(
@@ -271,32 +318,47 @@ def route_probe_logits(
     states: list[Mapping[str, Tensor]],
     skill_classes: list[set[int]],
 ) -> Tensor:
-    """Select the best skill for each probe sample.
+    """Select the most plausible skill for each probe sample.
 
-    Raw logits use global class-column indexing. A skill is scored only
-    using the logits corresponding to classes owned by that skill.
+    Each skill is scored only on logits corresponding to classes it owns.
+    Scores are normalized by the skill classifier weight norm so that
+    independently trained skill snapshots are not compared purely by
+    raw logit scale.
+
+    For a multi-class skill, the score is the margin between its strongest
+    owned class and its second-strongest owned class.
+
+    For a single-class skill, there is no meaningful within-skill margin,
+    so the score is the owned-class logit normalized by the classifier
+    weight norm.
+
+    This is label-free: the probe labels are never used for routing.
     """
-    del states
-
     scores = []
 
-    for logits, owned_classes in zip(raw_skill_logits, skill_classes, strict=False):
-        if not owned_classes:
-            scores.append(logits.new_full((logits.shape[0],), -1e4))
-            continue
-
-        valid_classes = [
+    for logits, state, owned_classes in zip(
+        raw_skill_logits, states, skill_classes, strict=False
+    ):
+        valid_classes = sorted(
             class_id for class_id in owned_classes if 0 <= class_id < logits.shape[1]
-        ]
+        )
 
         if not valid_classes:
             scores.append(logits.new_full((logits.shape[0],), -1e4))
             continue
 
-        class_logits = logits[:, valid_classes]
-        scores.append(class_logits.max(dim=1).values)
+        owned_logits = logits[:, valid_classes]
+        norm = _classifier_weight_norm(state, valid_classes)
+
+        if owned_logits.shape[1] == 1:
+            score = owned_logits[:, 0] / norm
+        else:
+            top2 = torch.topk(owned_logits, k=2, dim=1).values
+            score = (top2[:, 0] - top2[:, 1]) / norm
+
+        scores.append(score)
 
     if not scores:
-        raise RuntimeError("Cannot route probe samples without any skills")
+        raise RuntimeError("No skills available for probe routing")
 
     return torch.stack(scores, dim=0).argmax(dim=0)
