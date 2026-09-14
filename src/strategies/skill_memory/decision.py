@@ -54,11 +54,7 @@ def _strongest_candidates(results, key, floor):
     if gaps[split] <= 0:
         return set()
 
-    return {
-        result["skill"]
-        for result in ranked[: split + 1]
-        if result[key] > floor
-    }
+    return {result["skill"] for result in ranked[: split + 1] if result[key] > floor}
 
 
 def find_best_skill(
@@ -93,9 +89,7 @@ def find_best_skill(
     if not intersection:
         return None
 
-    candidates = [
-        result for result in safe_results if result["skill"] in intersection
-    ]
+    candidates = [result for result in safe_results if result["skill"] in intersection]
     return max(candidates, key=lambda r: (r["new_score"], r["new_accuracy"]))
 
 

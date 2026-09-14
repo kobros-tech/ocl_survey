@@ -11,7 +11,10 @@ from collections.abc import Mapping
 
 import numpy as np
 import torch
-from avalanche.models.dynamic_modules import IncrementalClassifier, avalanche_model_adaptation
+from avalanche.models.dynamic_modules import (
+    IncrementalClassifier,
+    avalanche_model_adaptation,
+)
 from torch import Tensor, nn
 from torch.utils.data import DataLoader, Subset
 
@@ -68,9 +71,7 @@ def classes_in_experience(experience) -> list[int]:
 def class_indices(experience, target_class: int) -> list[int]:
     indices = _class_index_map(experience).get(int(target_class))
     if not indices:
-        raise RuntimeError(
-            f"class {target_class} has no samples in this experience"
-        )
+        raise RuntimeError(f"class {target_class} has no samples in this experience")
     return list(indices)
 
 
@@ -108,7 +109,13 @@ def _sample_batches(dataset, batch_size: int, n_batches: int, seed: int | None):
     return torch.cat(xs), torch.cat(ys)
 
 
-def probe_class(experience, target_class: int, batch_size: int, n_batches: int, seed=None):
+def probe_class(
+    experience,
+    target_class: int,
+    batch_size: int,
+    n_batches: int,
+    seed=None,
+):
     return _sample_batches(
         class_subset(experience, target_class), batch_size, n_batches, seed
     )
@@ -149,7 +156,9 @@ def resize_incremental_classifiers_for_state(
             module.active_units = state_dict[active_key].to(device=device).clone()
 
 
-def incremental_out_features(model: nn.Module, state_dict: Mapping[str, Tensor]) -> int | None:
+def incremental_out_features(
+    model: nn.Module, state_dict: Mapping[str, Tensor]
+) -> int | None:
     for module_name, module in model.named_modules():
         if not isinstance(module, IncrementalClassifier):
             continue
@@ -160,7 +169,9 @@ def incremental_out_features(model: nn.Module, state_dict: Mapping[str, Tensor])
     return None
 
 
-def restore_initial_state(model: nn.Module, initial_state: Mapping[str, Tensor]) -> None:
+def restore_initial_state(
+    model: nn.Module, initial_state: Mapping[str, Tensor]
+) -> None:
     current = model.state_dict()
     for name, initial in initial_state.items():
         if name not in current:
@@ -186,7 +197,9 @@ def prepare_for_experience(model: nn.Module, experience) -> None:
     avalanche_model_adaptation(model, origin_experience(experience))
 
 
-def apply_skill_state(model: nn.Module, state_dict: Mapping[str, Tensor], experience) -> None:
+def apply_skill_state(
+    model: nn.Module, state_dict: Mapping[str, Tensor], experience
+) -> None:
     """Load a skill, then adapt its head for the current experience."""
     resize_incremental_classifiers_for_state(model, state_dict)
     model.load_state_dict(state_dict, strict=False)
@@ -244,28 +257,12 @@ def expand_skill_logits(
     skill_classes: set[int],
     output_dim: int,
 ) -> Tensor:
-    """Map a skill's local head into the global output space.
+    """Pad global classifier logits without remapping class columns."""
+    del state_dict, skill_classes
 
-    Unowned classes are padded with a large-but-finite sentinel (-1e4)
-    rather than -inf. A true -inf logit makes cross-entropy exactly +inf
-    for any sample misrouted onto a skill that doesn't own its true
-    class (which routine `probe` routing does sometimes, since it has
-    no label to route by). +inf loss is not JSON-serializable via
-    stdlib json.dumps in a spec-compliant way (it round-trips as the
-    literal token `Infinity`, which strict parsers like orjson reject),
-    and it also poisons any running/streamed average (inf + anything =
-    inf), silently destroying aggregate loss metrics for the rest of an
-    eval pass. -1e4 still dominates the loss for a misrouted sample
-    (cross-entropy ~1e4 vs. ~1-10 for a correctly routed sample), so the
-    diagnostic signal that routing failed is preserved, but the value
-    stays finite.
-    """
     result = logits.new_full((logits.shape[0], output_dim), -1e4)
-    active = sorted(skill_classes)
-    if logits.shape[1] < len(active):
-        active = active[: logits.shape[1]]
-    if active:
-        result[:, active] = logits[:, : len(active)]
+    width = min(logits.shape[1], output_dim)
+    result[:, :width] = logits[:, :width]
     return result
 
 
@@ -274,10 +271,32 @@ def route_probe_logits(
     states: list[Mapping[str, Tensor]],
     skill_classes: list[set[int]],
 ) -> Tensor:
+    """Select the best skill for each probe sample.
+
+    Raw logits use global class-column indexing. A skill is scored only
+    using the logits corresponding to classes owned by that skill.
+    """
+    del states
+
     scores = []
-    for logits in raw_skill_logits:
-        if logits.shape[1] == 1:
-            scores.append(logits[:, 0])
-        else:
-            scores.append(logits.max(dim=1).values)
+
+    for logits, owned_classes in zip(raw_skill_logits, skill_classes, strict=False):
+        if not owned_classes:
+            scores.append(logits.new_full((logits.shape[0],), -1e4))
+            continue
+
+        valid_classes = [
+            class_id for class_id in owned_classes if 0 <= class_id < logits.shape[1]
+        ]
+
+        if not valid_classes:
+            scores.append(logits.new_full((logits.shape[0],), -1e4))
+            continue
+
+        class_logits = logits[:, valid_classes]
+        scores.append(class_logits.max(dim=1).values)
+
+    if not scores:
+        raise RuntimeError("Cannot route probe samples without any skills")
+
     return torch.stack(scores, dim=0).argmax(dim=0)

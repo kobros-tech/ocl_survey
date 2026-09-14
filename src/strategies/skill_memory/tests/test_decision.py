@@ -1,15 +1,19 @@
-from pathlib import Path
 import importlib.util
 import sys
 import types
+from pathlib import Path
 
 # Minimal Avalanche stubs so decision.py/probing.py can be imported in a
 # lightweight environment without installing Avalanche.
 avalanche = types.ModuleType("avalanche")
 models = types.ModuleType("avalanche.models")
 dynamic = types.ModuleType("avalanche.models.dynamic_modules")
+
+
 class IncrementalClassifier:  # pragma: no cover - only used for isinstance
     pass
+
+
 dynamic.IncrementalClassifier = IncrementalClassifier
 dynamic.avalanche_model_adaptation = lambda model, experience: None
 models.dynamic_modules = dynamic
@@ -17,20 +21,26 @@ avalanche.models = models
 training = types.ModuleType("avalanche.training")
 plugins = types.ModuleType("avalanche.training.plugins")
 sp = types.ModuleType("avalanche.training.plugins.strategy_plugin")
+
+
 class SupervisedPlugin:  # pragma: no cover
     pass
+
+
 sp.SupervisedPlugin = SupervisedPlugin
 plugins.strategy_plugin = sp
 training.plugins = plugins
 avalanche.training = training
-sys.modules.update({
-    "avalanche": avalanche,
-    "avalanche.models": models,
-    "avalanche.models.dynamic_modules": dynamic,
-    "avalanche.training": training,
-    "avalanche.training.plugins": plugins,
-    "avalanche.training.plugins.strategy_plugin": sp,
-})
+sys.modules.update(
+    {
+        "avalanche": avalanche,
+        "avalanche.models": models,
+        "avalanche.models.dynamic_modules": dynamic,
+        "avalanche.training": training,
+        "avalanche.training.plugins": plugins,
+        "avalanche.training.plugins.strategy_plugin": sp,
+    }
+)
 
 root = Path(__file__).parents[1]
 pkg = types.ModuleType("skillpkg")

@@ -18,27 +18,25 @@ REUSE is mutable: training updates the same reserved skill slot.
 
 from __future__ import annotations
 
-from collections.abc import Callable
-from copy import deepcopy
 import logging
 import time
-
-import torch
+from collections.abc import Callable
+from copy import deepcopy
 from typing import Any, Literal
 
+import torch
 from avalanche.training.plugins.strategy_plugin import SupervisedPlugin
 
 from .decision import decide_class
 from .probing import (
-    route_probe_logits,
-    apply_skill_state,
     apply_skill_state_exact,
     classes_in_experience,
-    origin_experience,
-    prepare_for_experience,
     expand_skill_logits,
+    origin_experience,
     predict_logits,
+    prepare_for_experience,
     restore_initial_state,
+    route_probe_logits,
 )
 from .skill_registry import ClassRecord, ExperienceClassMap, SkillMemory
 from .training import train_on_class
@@ -269,16 +267,12 @@ class SkillMemoryPlugin(SupervisedPlugin):
                             "last_updated_experience": experience_index,
                         },
                     )
-                    self._log(
-                        f"Class {target_class}: skill {skill} updated in place"
-                    )
+                    self._log(f"Class {target_class}: skill {skill} updated in place")
                 else:
                     self._log(f"Class {target_class}: skill {skill} left unchanged")
             else:
                 skill = self.memory.allocate()
-                self._log(
-                    f"Class {target_class}: SCRATCH -> new skill {skill}"
-                )
+                self._log(f"Class {target_class}: SCRATCH -> new skill {skill}")
                 self._scratch_reset(strategy, experience)
                 train_on_class(
                     strategy,
@@ -339,7 +333,8 @@ class SkillMemoryPlugin(SupervisedPlugin):
         self._log(
             f"Experience {experience_index}: class->skill "
             + ", ".join(
-                f"{class_id}->{skill}" for class_id, skill in sorted(assignments.items())
+                f"{class_id}->{skill}"
+                for class_id, skill in sorted(assignments.items())
             )
         )
 
@@ -381,7 +376,8 @@ class SkillMemoryPlugin(SupervisedPlugin):
             apply_skill_state_exact(strategy.model, self.memory.state(skill))
             self._reset_optimizer(strategy)
             self._log(
-                f"[ORACLE eval diagnostic] experience {experience_index} -> skill {skill}"
+                "[ORACLE eval diagnostic] experience "
+                f"{experience_index} -> skill {skill}"
             )
             return
 
@@ -419,8 +415,7 @@ class SkillMemoryPlugin(SupervisedPlugin):
         probe_model = deepcopy(strategy.model)
 
         raw_skill_logits = [
-            predict_logits(probe_model, self.memory.state(slot), x)
-            for slot in slot_ids
+            predict_logits(probe_model, self.memory.state(slot), x) for slot in slot_ids
         ]
         output_dim = strategy.mb_output.shape[-1]
         per_skill_logits = [
@@ -430,7 +425,7 @@ class SkillMemoryPlugin(SupervisedPlugin):
                 self.class_map.classes_for_skill(slot),
                 output_dim,
             )
-            for slot, logits in zip(slot_ids, raw_skill_logits)
+            for slot, logits in zip(slot_ids, raw_skill_logits, strict=False)
         ]
         batch_size = x.shape[0]
 

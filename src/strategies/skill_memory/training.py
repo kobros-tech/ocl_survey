@@ -8,7 +8,9 @@ from torch.utils.data import DataLoader
 from .probing import class_subset
 
 
-def train_on_class(strategy, experience, target_class: int, epochs: int, batch_size: int) -> None:
+def train_on_class(
+    strategy, experience, target_class: int, epochs: int, batch_size: int
+) -> None:
     """Train only on samples whose label equals ``target_class``.
 
     This loop bypasses Avalanche's normal training-iteration machinery because
