@@ -244,8 +244,23 @@ def expand_skill_logits(
     skill_classes: set[int],
     output_dim: int,
 ) -> Tensor:
-    """Map a skill's local head into the global output space."""
-    result = logits.new_full((logits.shape[0], output_dim), float("-inf"))
+    """Map a skill's local head into the global output space.
+
+    Unowned classes are padded with a large-but-finite sentinel (-1e4)
+    rather than -inf. A true -inf logit makes cross-entropy exactly +inf
+    for any sample misrouted onto a skill that doesn't own its true
+    class (which routine `probe` routing does sometimes, since it has
+    no label to route by). +inf loss is not JSON-serializable via
+    stdlib json.dumps in a spec-compliant way (it round-trips as the
+    literal token `Infinity`, which strict parsers like orjson reject),
+    and it also poisons any running/streamed average (inf + anything =
+    inf), silently destroying aggregate loss metrics for the rest of an
+    eval pass. -1e4 still dominates the loss for a misrouted sample
+    (cross-entropy ~1e4 vs. ~1-10 for a correctly routed sample), so the
+    diagnostic signal that routing failed is preserved, but the value
+    stays finite.
+    """
+    result = logits.new_full((logits.shape[0], output_dim), -1e4)
     active = sorted(skill_classes)
     if logits.shape[1] < len(active):
         active = active[: logits.shape[1]]
