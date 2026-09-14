@@ -1,9 +1,7 @@
-from pathlib import Path
 import importlib.util
 import sys
 import types
-
-import torch
+from pathlib import Path
 
 # Lightweight Avalanche stubs.
 avalanche = types.ModuleType("avalanche")
@@ -56,7 +54,13 @@ pkg = types.ModuleType("pluginpkg")
 pkg.__path__ = [str(root)]
 sys.modules["pluginpkg"] = pkg
 
-for name in ("skill_registry", "probing", "decision", "training", "skill_memory_plugin"):
+for name in (
+    "skill_registry",
+    "probing",
+    "decision",
+    "training",
+    "skill_memory_plugin",
+):
     path = root / f"{name}.py"
     spec = importlib.util.spec_from_file_location(f"pluginpkg.{name}", path)
     module = importlib.util.module_from_spec(spec)

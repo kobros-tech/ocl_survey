@@ -14,10 +14,10 @@ label-indexing path, with a fake dataset that counts how many times
 `__getitem__` is called.
 """
 
-from pathlib import Path
 import importlib.util
 import sys
 import types
+from pathlib import Path
 
 # Lightweight Avalanche stubs, same pattern as the other tests in this
 # directory.

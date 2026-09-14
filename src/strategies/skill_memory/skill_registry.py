@@ -121,7 +121,9 @@ class ExperienceClassMap:
     def classes_for_skill(self, skill: int) -> set[int]:
         return set(self._by_skill.get(skill, set()))
 
-    def skills_for_experience(self, experience_index: int) -> list[tuple[int, set[int]]]:
+    def skills_for_experience(
+        self, experience_index: int
+    ) -> list[tuple[int, set[int]]]:
         """Return ``[(skill, {classes}), ...]`` for one experience."""
         grouped: dict[int, set[int]] = {}
         for class_id, record in self._by_experience.get(experience_index, {}).items():
@@ -132,5 +134,7 @@ class ExperienceClassMap:
         """Return the complete ``class -> skill`` mapping for one experience."""
         return {
             class_id: record.skill
-            for class_id, record in self._by_experience.get(experience_index, {}).items()
+            for class_id, record in self._by_experience.get(
+                experience_index, {}
+            ).items()
         }

@@ -33,7 +33,7 @@ skill      -> all mastered classes
 ## Files
 
 - `skill_registry.py` — skill snapshots and class/experience bookkeeping.
-- `probing.py` — class filtering, probing, model-state helpers.
+- `probing.py` — class filtering, probing, model-state helpers, and input-only routing.
 - `decision.py` — REUSE/SCRATCH decision logic.
 - `training.py` — one-class-at-a-time training loop.
 - `skill_memory_plugin.py` — Avalanche orchestration.
@@ -47,17 +47,43 @@ protocol used by ordinary continual-learning baselines such as ER. Inside each
 physical evaluation minibatch, however, samples may be routed to different
 stored skills. The probe router does not inspect the target labels.
 
+### Best-skill routing API
+
+`find_best_routing_skill()` is the richer API behind `route_probe_logits()`.
+It receives one raw-logit tensor per stored skill plus the classes mastered by
+each skill. It does **not** receive labels.
+
+For every sample it:
+
+1. scores each skill using the existing v0.1.4 routing signal: the strongest
+   logit among that skill's owned global class columns;
+2. applies `softmax(score / temperature)` across skills;
+3. selects the highest-probability skill;
+4. returns the best probability, second-best probability, and their gap.
+
+The returned probabilities are **normalized routing probabilities**, not
+calibrated probabilities of correctness.
+
+The result contains:
+
+```text
+skill_indices       [batch]
+probabilities       [skills, batch]
+best_probability    [batch]
+second_probability  [batch]
+confidence_gap      [batch]
+```
+
+`route_probe_logits()` remains available and returns only the selected skill
+indices for backwards compatibility.
+
 `class_oracle` is a diagnostic upper bound: it uses the true label to select the
 canonical skill for each sample. `oracle` is retained for backwards
 compatibility and swaps one skill for a whole evaluation experience; neither
 should be reported as the task-free headline result.
 
-The probe router does not use predictive entropy directly. Entropy is
-problematic for snapshots with different classifier sizes, and a one-class
-head has identically zero entropy for every input. Instead, routing uses a
-classifier margin (or the single-class logit) normalized by the stored
-classifier weight norm. This is an input-only routing heuristic; no target
-label is used.
+The probe router does not use predictive entropy directly. Routing remains an
+input-only heuristic and never uses target labels.
 
 ## Important invariant
 

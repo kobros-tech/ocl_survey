@@ -23,8 +23,9 @@ from avalanche.training.supervised import *
 from avalanche.training.supervised.mer import MER
 from src.factories.benchmark_factory import DS_CLASSES, DS_SIZES
 from src.strategies import (ER_ACE, AGEMPlugin, LwFPlugin, OnlineICaRL,
-                            OnlineICaRLLossPlugin, SkillMemoryPlugin,
-                            SkillMemory)
+                            OnlineICaRLLossPlugin, 
+                            PersistentFingerprintSkillMemoryPlugin as SkillMemoryPlugin,
+                            SkillMemory, )
 from src.toolkit.cumulative_accuracies import CumulativeAccuracyPluginMetric
 from src.toolkit.json_logger import JSONLogger
 from src.toolkit.lambda_scheduler import LambdaScheduler
@@ -154,7 +155,7 @@ def create_strategy(
 
     elif name == "skill_memory":
         strategy = "Naive"
-        skill_memory = SkillMemory(max_skills=int(strategy_kwargs.get("max_skills", 20)))
+        skill_memory = SkillMemory(max_skills=int(strategy_kwargs.get("max_skills", 200)))
         skill_plugin = SkillMemoryPlugin(
             memory=skill_memory,
             max_skills=int(strategy_kwargs.get("max_skills", 200)),
