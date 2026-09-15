@@ -33,11 +33,11 @@ from .probing import (
     apply_skill_state_exact,
     classes_in_experience,
     expand_skill_logits,
+    find_best_routing_skill,
     origin_experience,
     predict_logits,
     prepare_for_experience,
     restore_initial_state,
-    route_probe_logits,
 )
 from .skill_registry import ClassRecord, ExperienceClassMap, SkillMemory
 from .training import train_on_class
@@ -105,6 +105,8 @@ class SkillMemoryPlugin(SupervisedPlugin):
         self._original_train_epochs: int | None = None
         self._pre_eval_state: dict | None = None
         self._eval_active = False
+        self._probe_correct_margins: list[float] = []
+        self._probe_wrong_margins: list[float] = []
 
         if eval_routing in ("oracle", "class_oracle"):
             logger.warning(
@@ -353,6 +355,8 @@ class SkillMemoryPlugin(SupervisedPlugin):
     def before_eval(self, strategy, **kwargs) -> None:
         self._pre_eval_state = self._snapshot(strategy.model)
         self._eval_active = True
+        self._probe_correct_margins = []
+        self._probe_wrong_margins = []
 
     def before_eval_exp(self, strategy, **kwargs) -> None:
         if not self._eval_active or self.eval_routing == "none":
@@ -437,12 +441,13 @@ class SkillMemoryPlugin(SupervisedPlugin):
                 chosen.append(slot_ids.index(skill) if skill in slot_ids else 0)
             chosen = torch.tensor(chosen, device=device, dtype=torch.long)
         else:
-            chosen = route_probe_logits(
+            routing = find_best_routing_skill(
                 raw_skill_logits,
                 [self.memory.state(slot) for slot in slot_ids],
                 [self.class_map.classes_for_skill(slot) for slot in slot_ids],
             )
-            self._log_probe_routing_diagnostic(y, chosen, slot_ids)
+            chosen = routing.skill_indices
+            self._log_probe_routing_diagnostic(y, chosen, slot_ids, routing)
 
         strategy.mb_output = torch.stack(per_skill_logits, dim=0)[
             chosen, torch.arange(batch_size, device=device)
@@ -452,6 +457,7 @@ class SkillMemoryPlugin(SupervisedPlugin):
         if not self._eval_active:
             return
         try:
+            self._log_probe_margin_summary()
             if self._pre_eval_state is not None:
                 restore_initial_state(strategy.model, self._pre_eval_state)
                 self._reset_optimizer(strategy)
@@ -460,7 +466,11 @@ class SkillMemoryPlugin(SupervisedPlugin):
             self._eval_active = False
 
     def _log_probe_routing_diagnostic(
-        self, y: Tensor, chosen: Tensor, slot_ids: list[int]
+        self,
+        y: Tensor,
+        chosen: Tensor,
+        slot_ids: list[int],
+        routing,
     ) -> None:
         """Log probe-vs-oracle skill-selection agreement for this batch.
 
@@ -472,35 +482,105 @@ class SkillMemoryPlugin(SupervisedPlugin):
         got picked) from a skill-quality problem (right skill picked,
         but its prediction was still wrong).
 
+        Also reports how many samples cleared `self.score_floor`
+        (default 0.9) on `routing.best_probability`. That value is
+        the unsupervised counterpart of the exact same score used by
+        `decision.py`'s `score_floor` check during training -- the
+        training-time version uses the TRUE label as the target
+        because the class being probed is already known; here there
+        is no label, so the "target" is each skill's own claimed
+        class, and the reported probability is how much a skill's own
+        softmax believes the input actually is that class. This does
+        NOT change which skill gets selected (selection is always
+        argmax); it's a diagnostic count of how many routing decisions
+        were made with the same confidence level that training
+        considers reliable.
+
         This is purely additive logging -- it does not change routing,
         predictions, or metrics. Safe to run alongside a normal
         `eval_routing="probe"` pass.
         """
         labels = y.detach().cpu().tolist()
         chosen_list = chosen.detach().cpu().tolist()
+        best_probs = routing.best_probability.detach().cpu().tolist()
+        margins = routing.confidence_gap.detach().cpu().tolist()
+
         agree = 0
+        above_floor = 0
         mismatches = []
-        for label, chosen_idx in zip(labels, chosen_list, strict=False):
+        for label, chosen_idx, prob, margin in zip(
+            labels, chosen_list, best_probs, margins, strict=False
+        ):
             oracle_skill = self.class_map.find_skill_for_class_anywhere(int(label))
             oracle_idx = (
                 slot_ids.index(oracle_skill) if oracle_skill in slot_ids else None
             )
             probe_skill = slot_ids[chosen_idx]
-            if oracle_idx is not None and chosen_idx == oracle_idx:
+            correct = oracle_idx is not None and chosen_idx == oracle_idx
+            if correct:
                 agree += 1
+                self._probe_correct_margins.append(margin)
             else:
-                mismatches.append((int(label), oracle_skill, probe_skill))
+                self._probe_wrong_margins.append(margin)
+                mismatches.append(
+                    (int(label), oracle_skill, probe_skill, round(prob, 4))
+                )
+            floor = self.score_floor if self.score_floor is not None else 0.9
+            if prob >= floor:
+                above_floor += 1
+
         total = len(labels)
         routing_acc = agree / total if total else float("nan")
         self._log(
-            "[PROBE routing diagnostic] batch "
-            f"routing_accuracy={routing_acc:.4f} "
-            f"({agree}/{total} samples routed to the same skill "
-            "class_oracle would pick)"
+            f"[PROBE routing diagnostic] batch routing_accuracy={routing_acc:.4f} "
+            f"({agree}/{total} samples "
+            f"routed to the same skill class_oracle would pick), "
+            f"{above_floor}/{total} at or above score_floor="
+            f"{self.score_floor if self.score_floor is not None else 0.9}"
         )
         if mismatches:
             sample = mismatches[:5]
             self._log(
-                "[PROBE routing diagnostic] sample mismatches "
-                f"(label, oracle_skill, probe_skill): {sample}"
+                f"[PROBE routing diagnostic] sample mismatches "
+                f"(label, oracle_skill, probe_skill, best_probability): "
+                f"{sample}"
             )
+
+    def _log_probe_margin_summary(self) -> None:
+        """Aggregate winner-vs-second-best margin, correct vs wrong routing.
+
+        Called once at the end of an eval phase (see `after_eval`), over
+        every sample seen across the whole phase, not just one batch --
+        the mean-margin comparison is noisy on a single batch and is
+        the number actually worth trusting.
+        """
+        if not self._probe_correct_margins and not self._probe_wrong_margins:
+            return
+
+        def _mean(xs: list[float]) -> float:
+            return sum(xs) / len(xs) if xs else float("nan")
+
+        correct_mean = _mean(self._probe_correct_margins)
+        wrong_mean = _mean(self._probe_wrong_margins)
+        self._log(
+            "[PROBE routing diagnostic] eval-phase margin summary: "
+            f"correct routing n={len(self._probe_correct_margins)} "
+            f"mean_margin={correct_mean:.4f} | "
+            f"wrong routing n={len(self._probe_wrong_margins)} "
+            f"mean_margin={wrong_mean:.4f}"
+        )
+        if self._probe_correct_margins and self._probe_wrong_margins:
+            if correct_mean > wrong_mean:
+                self._log(
+                    "[PROBE routing diagnostic] correct routing has a higher mean "
+                    "margin than wrong routing -- the confidence score is at least "
+                    "partially discriminative."
+                )
+            else:
+                self._log(
+                    "[PROBE routing diagnostic] correct and wrong routing have "
+                    "similar/inverted mean margins -- the confidence score is NOT "
+                    "reliably separating skills; this needs a different signal "
+                    "(e.g. training skills with negative examples), not another "
+                    "formula on top of the current one."
+                )

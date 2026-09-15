@@ -63,7 +63,7 @@ def test_classes_and_probe_are_based_on_dataset_content():
 
     assert mod.classes_in_experience(exp) == [0, 1, 2]
 
-    x, y = mod.probe_class(
+    _x, y = mod.probe_class(
         exp,
         1,
         batch_size=10,

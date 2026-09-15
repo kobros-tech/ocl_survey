@@ -161,3 +161,36 @@ def test_route_probe_logits_remains_compatible():
     richer = mod.find_best_routing_skill(logits, states, classes).skill_indices
 
     assert torch.equal(legacy, richer)
+
+
+def test_routing_uses_probability_mass_not_raw_logit_scale():
+    logits = [torch.tensor([[8.0, 7.0]]), torch.tensor([[3.0, 0.0]])]
+    result = mod.find_best_routing_skill(logits, [{}, {}], [[0], [1]])
+    assert result.skill_indices.tolist() == [0]
+    assert result.probabilities[0, 0] > result.probabilities[1, 0]
+
+
+def test_single_class_skill_is_not_automatically_probability_one():
+    # skill 0 owns class 0 and its own classifier is confident about it
+    # (top logit is column 0). skill 1 also has a single owned class
+    # (class 1) but its own classifier is NOT confident about that
+    # column -- its raw top logit sits on column 0, not its own column
+    # 1. This is a genuinely asymmetric case: only skill 0 should score
+    # high, and skill 1's "single owned class" status must not by itself
+    # produce a trivial score of 1.0.
+    logits = [torch.tensor([[4.0, 0.0]]), torch.tensor([[4.0, 0.0]])]
+    result = mod.find_best_routing_skill(logits, [{}, {}], [[0], [1]])
+    assert result.skill_indices.tolist() == [0]
+    assert result.probabilities[0, 0] > result.probabilities[1, 0]
+    # skill 1's score for its own (unsupported) column should be small,
+    # not automatically 1.0 just because it owns exactly one class.
+    assert result.probabilities[1, 0] < 0.5
+
+
+def test_no_usable_classes_use_uniform_routing_fallback():
+    logits = [torch.tensor([[0.0]]), torch.tensor([[0.0]])]
+    result = mod.find_best_routing_skill(logits, [{}, {}], [[], []])
+    assert torch.allclose(
+        result.probabilities[:, 0],
+        torch.tensor([0.5, 0.5]),
+    )
