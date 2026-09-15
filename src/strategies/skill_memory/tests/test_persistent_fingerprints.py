@@ -31,7 +31,6 @@ def _load_plugin():
     dynamic.IncrementalClassifier = IncrementalClassifier
     dynamic.avalanche_model_adaptation = lambda model, experience: None
     models.dynamic_modules = dynamic
-    avalanche.models = models
     sys.modules.update(
         {
             "avalanche": avalanche,
@@ -198,6 +197,86 @@ def test_multiclass_skill_routing_matches_persistent_class_behavior():
     assert chosen.tolist() == [0, 0, 1, 1]
     assert classes == [0, 1, 2, 3]
     assert probabilities.shape == (2, 4)
+
+
+def test_generated_fingerprints_produce_non_uniform_skill_evidence():
+    mod = _load_plugin()
+    plugin = mod.PersistentFingerprintSkillMemoryPlugin(verbose=False)
+    plugin.memory.store(0, {"slot": torch.tensor([0.0])})
+    plugin.memory.store(1, {"slot": torch.tensor([1.0])})
+
+    registry = sys.modules["persistent_test_package.skill_registry"]
+    for class_id, skill_id in ((0, 0), (1, 1)):
+        plugin.class_map.record(
+            registry.ClassRecord(
+                experience_index=0,
+                class_id=class_id,
+                decision=plugin.SCRATCH,
+                skill=skill_id,
+            )
+        )
+
+    zero_reference = torch.tensor([[12.0, 0.0, -3.0]])
+    one_reference = torch.tensor([[0.0, 12.0, -3.0]])
+    zero_output, zero_summary, class_ids = mod.extract_reference_behavior(
+        zero_reference,
+        [0, 1, 2],
+        target_class=0,
+    )
+    one_output, one_summary, _ = mod.extract_reference_behavior(
+        one_reference,
+        [0, 1, 2],
+        target_class=1,
+    )
+    plugin.behavior.put(
+        mod.ClassBehaviorRecord(
+            class_id=0,
+            skill_id=0,
+            version=0,
+            reference_inputs=torch.zeros(1, 1),
+            output_class_ids=class_ids,
+            reference_output=zero_output,
+            reference_summary=zero_summary,
+        )
+    )
+    plugin.behavior.put(
+        mod.ClassBehaviorRecord(
+            class_id=1,
+            skill_id=1,
+            version=0,
+            reference_inputs=torch.ones(1, 1),
+            output_class_ids=class_ids,
+            reference_output=one_output,
+            reference_summary=one_summary,
+        )
+    )
+
+    class Model:
+        pass
+
+    strategy = types.SimpleNamespace(model=Model())
+
+    def fake_predict(model, state, x):
+        del model
+        rows = []
+        for value in x[:, 0].tolist():
+            rows.append(
+                [12.0, 0.0, -3.0] if value == 0 else [0.0, 12.0, -3.0]
+            )
+        return torch.tensor(rows)
+
+    mod.predict_logits = fake_predict
+    _, probabilities, classes = plugin._fingerprint_route(
+        strategy,
+        torch.tensor([[0.0], [1.0]]),
+        [0, 1],
+    )
+
+    assert classes == [0, 1]
+    assert probabilities[0, 0] > probabilities[1, 0]
+    assert probabilities[0, 0] > 0.5
+    assert probabilities[1, 1] > probabilities[0, 1]
+    assert probabilities[1, 1] > 0.5
 
 
 def test_legacy_behavior_checkpoint_is_accepted():

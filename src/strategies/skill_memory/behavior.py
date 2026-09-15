@@ -137,13 +137,17 @@ def summarize_behavior(logits: Tensor, owned_classes: list[int]) -> Tensor:
     if not valid:
         return torch.zeros(4, dtype=logits.dtype, device=logits.device)
 
-    owned = logits[:, valid]
-    top2 = torch.topk(owned, k=min(2, owned.shape[-1]), dim=-1).values
+    probabilities = torch.softmax(logits, dim=-1)[:, valid]
+    top2 = torch.topk(
+        probabilities,
+        k=min(2, probabilities.shape[-1]),
+        dim=-1,
+    ).values
     margin = top2[:, 0] - (top2[:, 1] if top2.shape[-1] > 1 else 0.0)
     summary = torch.stack(
         [
-            owned.mean(dim=-1),
-            owned.std(dim=-1, unbiased=False),
+            probabilities.mean(dim=-1),
+            probabilities.std(dim=-1, unbiased=False),
             top2[:, 0],
             margin,
         ],
@@ -157,12 +161,16 @@ def extract_reference_behavior(
     class_ids: list[int],
     target_class: int,
 ) -> tuple[Tensor, Tensor, tuple[int, ...]]:
-    """Extract class-aligned output and summary from reference samples."""
+    """Extract a class-aligned probability fingerprint from reference inputs."""
     valid = tuple(sorted({c for c in class_ids if 0 <= c < logits.shape[-1]}))
     if target_class not in valid:
         raise ValueError("target class is not represented by the reference output")
 
-    output = _normalize(logits[:, list(valid)]).mean(dim=0).detach().cpu()
+    # Store the mean probability distribution rather than an averaged
+    # normalized-logit vector. A probability distribution preserves which
+    # global classifier columns the reference class activates and remains
+    # comparable across samples with different logit scales.
+    output = torch.softmax(logits, dim=-1)[:, list(valid)].mean(dim=0).detach().cpu()
     summary = summarize_behavior(logits, list(valid)).detach().cpu()
     return output, summary, valid
 
@@ -173,7 +181,7 @@ def probe_behavior_fingerprint(
     reference_output: Tensor,
     reference_summary: Tensor,
 ) -> tuple[Tensor, Tensor]:
-    """Return output/summary similarity for each probe sample.
+    """Return probability-fingerprint similarity for each probe sample.
 
     ``output_class_ids`` are global classifier IDs, not positions into the
     compact reference tensor. Reference and probe outputs may have different
@@ -213,8 +221,9 @@ def probe_behavior_fingerprint(
     current_positions = {
         class_id: position for position, class_id in enumerate(union_ids)
     }
+    current_probabilities = torch.softmax(logits, dim=-1)
     for class_id in current_ids:
-        current[:, current_positions[class_id]] = logits[:, class_id]
+        current[:, current_positions[class_id]] = current_probabilities[:, class_id]
 
     current = _normalize(current)
     reference = _normalize(reference.unsqueeze(0)).squeeze(0)

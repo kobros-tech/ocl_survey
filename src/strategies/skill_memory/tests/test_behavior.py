@@ -68,6 +68,75 @@ def test_probe_behavior_matches_class_aligned_reference():
     assert summary.shape == (4,)
 
 
+def test_generated_fingerprints_rank_their_source_classes():
+    class_zero_reference = torch.tensor(
+        [[10.0, 0.0, -2.0], [9.0, 1.0, -2.0]]
+    )
+    class_one_reference = torch.tensor(
+        [[0.0, 10.0, -2.0], [1.0, 9.0, -2.0]]
+    )
+
+    zero_output, zero_summary, class_ids = mod.extract_reference_behavior(
+        class_zero_reference,
+        [0, 1, 2],
+        target_class=0,
+    )
+    one_output, one_summary, _ = mod.extract_reference_behavior(
+        class_one_reference,
+        [0, 1, 2],
+        target_class=1,
+    )
+
+    zero_on_zero, _ = mod.probe_behavior_fingerprint(
+        class_zero_reference[:1], class_ids, zero_output, zero_summary
+    )
+    zero_on_one, _ = mod.probe_behavior_fingerprint(
+        class_one_reference[:1], class_ids, zero_output, zero_summary
+    )
+    one_on_one, _ = mod.probe_behavior_fingerprint(
+        class_one_reference[:1], class_ids, one_output, one_summary
+    )
+    one_on_zero, _ = mod.probe_behavior_fingerprint(
+        class_zero_reference[:1], class_ids, one_output, one_summary
+    )
+
+    assert zero_on_zero.item() > zero_on_one.item()
+    assert one_on_one.item() > one_on_zero.item()
+
+
+def test_generated_class_fingerprints_are_not_uniform_for_distinct_classes():
+    class_zero_reference = torch.tensor([[12.0, 0.0, -3.0]])
+    class_one_reference = torch.tensor([[0.0, 12.0, -3.0]])
+    zero_output, zero_summary, class_ids = mod.extract_reference_behavior(
+        class_zero_reference,
+        [0, 1, 2],
+        target_class=0,
+    )
+    one_output, one_summary, _ = mod.extract_reference_behavior(
+        class_one_reference,
+        [0, 1, 2],
+        target_class=1,
+    )
+
+    probe_zero = torch.tensor([[12.0, 0.0, -3.0]])
+    probe_one = torch.tensor([[0.0, 12.0, -3.0]])
+    zero_match, _ = mod.probe_behavior_fingerprint(
+        probe_zero, class_ids, zero_output, zero_summary
+    )
+    zero_other, _ = mod.probe_behavior_fingerprint(
+        probe_one, class_ids, zero_output, zero_summary
+    )
+    one_match, _ = mod.probe_behavior_fingerprint(
+        probe_one, class_ids, one_output, one_summary
+    )
+    one_other, _ = mod.probe_behavior_fingerprint(
+        probe_zero, class_ids, one_output, one_summary
+    )
+
+    assert zero_match.item() - zero_other.item() > 0.1
+    assert one_match.item() - one_other.item() > 0.1
+
+
 def test_fingerprint_uses_global_class_ids_not_local_columns():
     reference_logits = torch.zeros(1, 100)
     reference_logits[0, 42] = 100.0
