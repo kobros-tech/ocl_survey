@@ -94,6 +94,50 @@ def test_probe_routing_selects_one_skill_per_sample_without_labels():
     assert chosen.tolist() == [0, 1]
 
 
+def test_find_best_routing_skill_reports_normalized_probabilities():
+    states = [{}, {}]
+    logits_by_skill = [
+        torch.tensor([[5.0, 0.0], [2.0, 0.0]]),
+        torch.tensor([[0.0, 5.0], [2.0, 0.0]]),
+    ]
+
+    result = mod.find_best_routing_skill(
+        logits_by_skill,
+        states,
+        [{0}, {1}],
+    )
+
+    assert torch.allclose(
+        result.probabilities.sum(dim=0),
+        torch.ones(2),
+    )
+    assert result.skill_indices.tolist() == [0, 0]
+    assert torch.all(result.best_probability >= result.second_probability)
+    assert torch.allclose(
+        result.confidence_gap,
+        result.best_probability - result.second_probability,
+    )
+    assert torch.all(result.confidence_gap >= 0)
+
+
+def test_find_best_routing_skill_uses_uniform_fallback_when_no_evidence():
+    states = [{}, {}, {}]
+    logits_by_skill = [
+        torch.zeros(2, 3),
+        torch.zeros(2, 3),
+        torch.zeros(2, 3),
+    ]
+
+    result = mod.find_best_routing_skill(
+        logits_by_skill,
+        states,
+        [set(), set(), set()],
+    )
+
+    assert torch.allclose(result.probabilities, torch.full((3, 2), 1 / 3))
+    assert result.skill_indices.tolist() == [0, 0]
+
+
 def test_probe_routing_does_not_use_raw_entropy_for_one_class_heads():
     states = [
         {"classifier.weight": torch.tensor([[1.0]])},

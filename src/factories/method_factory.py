@@ -23,8 +23,9 @@ from avalanche.training.supervised import *
 from avalanche.training.supervised.mer import MER
 from src.factories.benchmark_factory import DS_CLASSES, DS_SIZES
 from src.strategies import (ER_ACE, AGEMPlugin, LwFPlugin, OnlineICaRL,
-                            OnlineICaRLLossPlugin, SkillMemoryPlugin,
-                            SkillMemory)
+                            OnlineICaRLLossPlugin, 
+                            PersistentFingerprintSkillMemoryPlugin as SkillMemoryPlugin,
+                            SkillMemory, )
 from src.toolkit.cumulative_accuracies import CumulativeAccuracyPluginMetric
 from src.toolkit.json_logger import JSONLogger
 from src.toolkit.lambda_scheduler import LambdaScheduler
