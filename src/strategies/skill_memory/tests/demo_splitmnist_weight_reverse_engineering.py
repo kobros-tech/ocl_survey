@@ -53,8 +53,21 @@ class SkillMemoryMLP(nn.Module):
 def evaluate_seen(strategy, test_stream, up_to_index: int) -> list[float]:
     """Evaluate seen experiences through the anonymous routing path."""
     results = strategy.eval([test_stream[i] for i in range(up_to_index + 1)])
-    keys = sorted(key for key in results if key.startswith("Top1_Acc_Exp"))
-    return [float(results[key]) for key in keys]
+    prefix = "Top1_Acc_Exp"
+    indexed_results: dict[int, float] = {}
+    for key, value in results.items():
+        if not key.startswith(prefix):
+            continue
+        suffix = key[len(prefix) :]
+        if "/Exp" not in suffix:
+            continue
+        try:
+            eval_index = int(suffix.rsplit("/Exp", 1)[1])
+        except ValueError:
+            continue
+        if 0 <= eval_index <= up_to_index:
+            indexed_results[eval_index] = float(value)
+    return [indexed_results[index] for index in sorted(indexed_results)]
 
 
 def _correct_candidate_rank(route: dict) -> int | None:
@@ -156,9 +169,7 @@ def rank_summary(rows: list[dict]) -> dict:
         "top10_accuracy": sum(rank <= 10 for rank in ranks) / len(ranks),
         "mean_reciprocal_rank": sum(1.0 / rank for rank in ranks) / len(ranks),
         "mean_correct_class_rank": float(np.mean(ranks)),
-        "rank_histogram": {
-            str(rank): ranks.count(rank) for rank in sorted(set(ranks))
-        },
+        "rank_histogram": {str(rank): ranks.count(rank) for rank in sorted(set(ranks))},
     }
 
 
@@ -333,6 +344,7 @@ def write_analysis_files(
     accuracy_history: list[list[float]],
     accuracy_curve: np.ndarray,
     forgetting: np.ndarray,
+    alignment_report: dict,
 ) -> None:
     """Write artifacts that keep routing diagnostics separate from metrics."""
     csv_path = log_dir / f"weight_reverse_engineering_{run_id}.csv"
@@ -393,6 +405,7 @@ def write_analysis_files(
         "routing_rank_diagnostics": rank_summary(rows),
         "routing_rank_by_evaluation_experience": rank_summary_by_experience(rows),
         "routing_score_margin_diagnostics": score_margin_summary(rows),
+        "class_index_alignment_report": alignment_report,
         "analysis_csv": csv_path.name,
         "metric_scope": {
             "accuracy_curve": "anonymous routed model accuracy",
@@ -421,122 +434,123 @@ def write_analysis_files(
     print("Analysis CSV saved to:", csv_path)
     print("Accuracy matrix CSV saved to:", matrix_path)
     print("Analysis JSON saved to:", json_path)
-    print("Routing rank diagnostics:", json.dumps(summary["routing_rank_diagnostics"], indent=2))
-    print(
-        "Routing score-margin diagnostics:",
-        json.dumps(summary["routing_score_margin_diagnostics"], indent=2),
-    )
 
 
 def main() -> None:
-    run_id = datetime.now().strftime("%Y%m%d_%H%M%S")
+    """Run the SplitMNIST anonymous weight reverse-engineering demo."""
     log_dir = Path(__file__).resolve().parent / "logs"
-    log_dir.mkdir(exist_ok=True)
+    log_dir.mkdir(parents=True, exist_ok=True)
+    run_id = datetime.now().strftime("%Y%m%d_%H%M%S")
     log_path = log_dir / f"weight_reverse_engineering_{run_id}.txt"
-    log_file = open(log_path, "w")
     real_stdout = sys.stdout
-    sys.stdout = Tee(real_stdout, log_file)
-
-    try:
-        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        benchmark = SplitMNIST(n_experiences=10, seed=0)
-        train_stream = benchmark.train_stream
-        test_stream = benchmark.test_stream
-
-        print("Device:", device)
-        print(
-            "Routing: persistent binary fingerprint -> class -> canonical skill"
-        )
-        print("No experience ID or target class is supplied to routing.")
-        print(
-            "Reported accuracy/forgetting are routed metrics; routing and "
-            "classifier errors are not separated by these values."
-        )
-
-        model = SkillMemoryMLP(input_dim=784).to(device)
-        optimizer = torch.optim.SGD(model.parameters(), lr=0.01)
-        criterion = torch.nn.CrossEntropyLoss()
-        plugin = PersistentFingerprintSkillMemoryPlugin(
-            memory=SkillMemory(max_skills=10),
-            forgetting_margin=0.05,
-            probe_batch_size=10,
-            probe_batches=5,
-            probe_seed=0,
-            class_train_epochs=1,
-            class_train_batch_size=64,
-            reuse_is_mutable=True,
-            eval_routing="probe",
-            verbose=True,
-        )
-        strategy = SupervisedTemplate(
-            model=model,
-            optimizer=optimizer,
-            criterion=criterion,
-            train_mb_size=64,
-            train_epochs=1,
-            eval_mb_size=64,
-            device=device,
-            plugins=[plugin],
-        )
-
-        accuracy_history: list[list[float]] = []
-        analysis_rows: list[dict] = []
-        for train_index, train_exp in enumerate(train_stream):
-            strategy.train(train_exp)
-            accuracies = evaluate_seen(strategy, test_stream, train_index)
-            accuracy_history.append(accuracies)
-            analysis_rows.extend(
-                flatten_route(route, train_index)
-                for route in plugin.fingerprint_route_history
+    with log_path.open("w") as log_handle:
+        sys.stdout = Tee(real_stdout, log_handle)
+        try:
+            device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+            benchmark = SplitMNIST(n_experiences=10, seed=0)
+            model = SkillMemoryMLP(input_dim=784).to(device)
+            optimizer = torch.optim.SGD(model.parameters(), lr=0.01)
+            criterion = torch.nn.CrossEntropyLoss()
+            plugin = PersistentFingerprintSkillMemoryPlugin(
+                memory=SkillMemory(max_skills=10),
+                forgetting_margin=0.05,
+                probe_batch_size=10,
+                probe_batches=5,
+                probe_seed=0,
+                class_train_epochs=1,
+                class_train_batch_size=64,
+                reuse_is_mutable=True,
+                eval_routing="probe",
+                diagnose=True,
+                verbose=True,
             )
-            routes = plugin.last_fingerprint_routes
-            identified = sum(r["status"] == "IDENTIFIED" for r in routes)
-            ambiguous = sum(r["status"] == "AMBIGUOUS" for r in routes)
-            failed = sum(r["status"] == "FAILED" for r in routes)
-            print(
-                f"Step {train_index}: classes="
-                f"{sorted(train_exp.classes_in_this_experience)} "
-                f"mean_seen_routed_accuracy={np.mean(accuracies):.3f} "
-                f"last_batch_routes=(identified={identified}, "
-                f"ambiguous={ambiguous}, failed={failed})"
+            strategy = SupervisedTemplate(
+                model=model,
+                optimizer=optimizer,
+                criterion=criterion,
+                train_mb_size=64,
+                train_epochs=1,
+                eval_mb_size=64,
+                device=device,
+                plugins=[plugin],
             )
-            for eval_index, accuracy in enumerate(accuracies):
-                print(f"  routed_eval_exp={eval_index}: accuracy={accuracy:.3f}")
 
-        n = len(accuracy_history)
-        accuracy_curve = np.array([accuracy_history[i][i] for i in range(n)])
-        forgetting = np.zeros(n)
-        for class_index in range(n):
-            seen = [row[class_index] for row in accuracy_history[class_index:]]
-            if len(seen) > 1:
-                forgetting[class_index] = max(seen[:-1]) - seen[-1]
+            train_stream = benchmark.train_stream
+            test_stream = benchmark.test_stream
+            accuracy_history: list[list[float]] = []
+            analysis_rows: list[dict] = []
 
-        print("Routed accuracy:", np.round(accuracy_curve, 3))
-        print("Routed forgetting:", np.round(forgetting, 3))
-        print("Routed evaluation accuracy matrix:")
-        for train_index, accuracies in enumerate(accuracy_history):
-            print(
-                f"  train_step={train_index}: "
-                + ", ".join(
-                    f"Exp{eval_index}={accuracy:.3f}"
-                    for eval_index, accuracy in enumerate(accuracies)
+            for train_index, train_exp in enumerate(train_stream):
+                strategy.train(train_exp)
+                accuracies = evaluate_seen(strategy, test_stream, train_index)
+                accuracy_history.append(accuracies)
+                analysis_rows.extend(
+                    flatten_route(route, train_index)
+                    for route in plugin.fingerprint_route_history
                 )
+                routes = plugin.last_fingerprint_routes
+                identified = sum(
+                    route.get("status") == "IDENTIFIED" for route in routes
+                )
+                ambiguous = sum(route.get("status") == "AMBIGUOUS" for route in routes)
+                failed = sum(route.get("status") == "FAILED" for route in routes)
+                print(
+                    f"Step {train_index}: classes="
+                    f"{sorted(train_exp.classes_in_this_experience)} "
+                    f"mean_seen_routed_accuracy={np.mean(accuracies):.3f} "
+                    f"last_batch_routes=(identified={identified}, "
+                    f"ambiguous={ambiguous}, failed={failed})"
+                )
+                for eval_index, accuracy in enumerate(accuracies):
+                    print(f"  routed_eval_exp={eval_index}: accuracy={accuracy:.3f}")
+
+            n = len(accuracy_history)
+            accuracy_curve = np.array(
+                [
+                    row[i] if i < len(row) else float("nan")
+                    for i, row in enumerate(accuracy_history)
+                ],
+                dtype=float,
             )
-        print(
-            "Final fingerprint records:", len(plugin.behavior.state_dict()["records"])
-        )
-        write_analysis_files(
-            log_dir,
-            run_id,
-            analysis_rows,
-            accuracy_history,
-            accuracy_curve,
-            forgetting,
-        )
-        print("Log saved to:", log_path)
-    finally:
-        sys.stdout = real_stdout
-        log_file.close()
+            forgetting = np.zeros(n)
+            for class_index in range(n):
+                seen = [
+                    row[class_index]
+                    for row in accuracy_history[class_index:]
+                    if class_index < len(row) and not np.isnan(row[class_index])
+                ]
+                if len(seen) > 1:
+                    forgetting[class_index] = max(seen[:-1]) - seen[-1]
+
+            print("Routed accuracy:", np.round(accuracy_curve, 3))
+            print("Routed forgetting:", np.round(forgetting, 3))
+            print("Routed evaluation accuracy matrix:")
+            for train_index, accuracies in enumerate(accuracy_history):
+                print(
+                    f"  train_step={train_index}: "
+                    + ", ".join(
+                        f"Exp{eval_index}={accuracy:.3f}"
+                        for eval_index, accuracy in enumerate(accuracies)
+                    )
+                )
+            print(
+                "Final fingerprint records:",
+                len(plugin.behavior.state_dict()["records"]),
+            )
+            print("Class-index alignment report:")
+            print(json.dumps(plugin.last_alignment_report, indent=2, sort_keys=True))
+
+            write_analysis_files(
+                log_dir,
+                run_id,
+                analysis_rows,
+                accuracy_history,
+                accuracy_curve,
+                forgetting,
+                plugin.last_alignment_report,
+            )
+        finally:
+            sys.stdout = real_stdout
 
 
 if __name__ == "__main__":

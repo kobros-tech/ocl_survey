@@ -20,7 +20,6 @@ dynamic.IncrementalClassifier = IncrementalClassifier
 dynamic.avalanche_model_adaptation = lambda model, experience: None
 models.dynamic_modules = dynamic
 avalanche.models = models
-
 sys.modules.update(
     {
         "avalanche": avalanche,
@@ -72,89 +71,3 @@ def test_classes_and_probe_are_based_on_dataset_content():
     )
 
     assert set(y.tolist()) == {1}
-
-
-def test_probe_routing_selects_one_skill_per_sample_without_labels():
-    states = [
-        {"classifier.weight": torch.tensor([[2.0, 0.0]])},
-        {"classifier.weight": torch.tensor([[2.0, 0.0]])},
-    ]
-
-    logits_by_skill = [
-        torch.tensor([[4.0, 1.0], [1.0, 0.0]]),
-        torch.tensor([[1.0, 0.0], [4.0, 1.0]]),
-    ]
-
-    chosen = mod.route_probe_logits(
-        logits_by_skill,
-        states,
-        [{0}, {0}],
-    )
-
-    assert chosen.tolist() == [0, 1]
-
-
-def test_probe_routing_does_not_use_raw_entropy_for_one_class_heads():
-    states = [
-        {"classifier.weight": torch.tensor([[1.0]])},
-        {"classifier.weight": torch.tensor([[1.0]])},
-    ]
-
-    logits_by_skill = [
-        torch.tensor([[5.0], [1.0]]),
-        torch.tensor([[1.0], [5.0]]),
-    ]
-
-    chosen = mod.route_probe_logits(
-        logits_by_skill,
-        states,
-        [{0}, {0}],
-    )
-
-    assert chosen.tolist() == [0, 1]
-
-
-def test_probe_routing_uses_owned_global_class_columns():
-    """Routing must score skills using their owned global class columns."""
-    class_a = 87
-    class_b = 42
-    n_samples = 2
-    n_classes = max(class_a, class_b) + 1
-
-    def make_logits(class_values):
-        logits = torch.zeros(n_samples, n_classes)
-
-        for class_id, values in class_values.items():
-            logits[:, class_id] = torch.tensor(values)
-
-        return logits
-
-    states = [
-        {"classifier.weight": torch.tensor([[1.0]])},
-        {"classifier.weight": torch.tensor([[1.0]])},
-    ]
-
-    # Each skill has meaningful logits only in its owned global
-    # classifier column. This verifies that class 87 is read from
-    # column 87 and class 42 is read from column 42, rather than
-    # being remapped to local columns such as column 0.
-    logits_by_skill = [
-        make_logits(
-            {
-                class_a: [5.0, 1.0],
-            }
-        ),
-        make_logits(
-            {
-                class_b: [1.0, 5.0],
-            }
-        ),
-    ]
-
-    chosen = mod.route_probe_logits(
-        logits_by_skill,
-        states,
-        [{class_a}, {class_b}],
-    )
-
-    assert chosen.tolist() == [0, 1]

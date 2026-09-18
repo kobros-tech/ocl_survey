@@ -49,26 +49,50 @@ class _FeatureReverseModel(nn.Module):
         return self.output(tokens)
 
 
+class _BinaryFeatureReverseModel(nn.Module):
+    """Small MLP retained for the historical binary-pair API."""
+
+    def __init__(self, feature_dim: int, hidden_size: int) -> None:
+        super().__init__()
+        width = max(16, min(int(hidden_size), 128))
+        self.network = nn.Sequential(
+            nn.Linear(feature_dim, width),
+            nn.ReLU(),
+            nn.Linear(width, width),
+            nn.ReLU(),
+            nn.Linear(width, 1),
+        )
+
+    def forward(self, features: Tensor) -> Tensor:
+        return self.network(features)
+
+
 class NormalMLReverseEngineer:
     """Learn anonymous candidate/class compatibility as a normal ML problem.
 
-    The primary objective is listwise candidate selection: for every reference
-    sample, all currently known class candidates form one candidate set and
-    cross-entropy trains the model to put the correct class at the top. The
-    candidate tokens attend to one another, allowing the scorer to reason about
-    the complete candidate set rather than scoring every candidate independently.
+    Two training modes are supported:
 
-    Candidate identity is represented only through model-derived behavior
-    features. The integer class ID is never an input feature.
+    - ``"listwise"`` (default): for every reference sample, all currently
+      known class candidates form one candidate set and cross-entropy trains
+      the model to put the correct class at the top. Candidate tokens attend
+      to one another, so the scorer reasons about the complete candidate set
+      rather than scoring every candidate independently.
+    - ``"binary"``: the legacy pairwise-compatibility API, retained for
+      backward compatibility with callers built around ``fit_feature_pairs``.
+
+    In both modes, candidate identity is represented only through
+    model-derived behavior features. The integer class ID is never an input
+    feature, so no evaluation-time ground-truth leakage is possible through
+    this model.
     """
 
     def __init__(
         self,
         hidden_size: int = 128,
-        epochs: int = 120,
+        epochs: int = 60,
         learning_rate: float = 1e-3,
         seed: int = 0,
-        batch_size: int = 32,
+        batch_size: int = 256,
         training_mode: str = "listwise",
         num_heads: int = 8,
         num_layers: int = 3,
@@ -87,7 +111,7 @@ class NormalMLReverseEngineer:
         self.training_mode = training_mode
         self.num_heads = int(num_heads)
         self.num_layers = int(num_layers)
-        self.model: _FeatureReverseModel | None = None
+        self.model: nn.Module | None = None
         self.feature_dim: int | None = None
         self.feature_mean: Tensor | None = None
         self.feature_std: Tensor | None = None
@@ -99,25 +123,18 @@ class NormalMLReverseEngineer:
         return mean, std
 
     def _fit_model(self, features: Tensor, targets: Tensor) -> None:
-        """Fit the shared cross-candidate scoring network."""
+        """Fit either the listwise Transformer or binary compatibility MLP."""
         torch.manual_seed(self.seed)
         self.feature_dim = int(features.shape[-1])
         flat = features.reshape(-1, self.feature_dim)
         self.feature_mean, self.feature_std = self._fit_scaler(flat)
         normalized = (features - self.feature_mean) / self.feature_std
-        if self.training_mode == "listwise":
-            self.hidden_size = max(self.hidden_size, 128)
-            if self.hidden_size % self.num_heads != 0:
-                raise ValueError("hidden_size must be divisible by num_heads")
-        model = _FeatureReverseModel(
-            self.feature_dim,
-            self.hidden_size,
-            self.num_heads,
-            self.num_layers,
-        )
-        optimizer = torch.optim.AdamW(model.parameters(), lr=self.learning_rate)
 
-        if normalized.ndim == 2:
+        if self.training_mode == "binary":
+            model: nn.Module = _BinaryFeatureReverseModel(
+                self.feature_dim, self.hidden_size
+            )
+            optimizer = torch.optim.AdamW(model.parameters(), lr=self.learning_rate)
             positive_count = float(targets.sum().item())
             negative_count = float(targets.numel() - positive_count)
             pos_weight = (
@@ -138,6 +155,16 @@ class NormalMLReverseEngineer:
                     loss.backward()
                     optimizer.step()
         else:
+            self.hidden_size = max(self.hidden_size, 128)
+            if self.hidden_size % self.num_heads != 0:
+                raise ValueError("hidden_size must be divisible by num_heads")
+            model = _FeatureReverseModel(
+                self.feature_dim,
+                self.hidden_size,
+                self.num_heads,
+                self.num_layers,
+            )
+            optimizer = torch.optim.AdamW(model.parameters(), lr=self.learning_rate)
             criterion = nn.CrossEntropyLoss()
             sample_count = normalized.shape[0]
             batch_size = max(1, min(self.batch_size, sample_count))
@@ -179,7 +206,9 @@ class NormalMLReverseEngineer:
         for features, target in candidate_sets:
             features = features.detach().float().cpu()
             if features.ndim != 2:
-                raise ValueError("candidate-set features must be [candidates, features]")
+                raise ValueError(
+                    "candidate-set features must be [candidates, features]"
+                )
             target_index = (
                 int(target) if not isinstance(target, Tensor) else int(target.item())
             )
@@ -191,8 +220,7 @@ class NormalMLReverseEngineer:
         candidate_count = normalized_sets[0].shape[0]
         feature_dim = normalized_sets[0].shape[1]
         if any(
-            item.shape != (candidate_count, feature_dim)
-            for item in normalized_sets
+            item.shape != (candidate_count, feature_dim) for item in normalized_sets
         ):
             raise ValueError("candidate sets must have identical shapes")
         features = torch.stack(normalized_sets, dim=0)
@@ -206,7 +234,10 @@ class NormalMLReverseEngineer:
     ) -> None:
         """Fit from detached frozen-model features and binary targets."""
         if not pairs:
-            self.fit_candidate_sets([])
+            self.model = None
+            self.feature_dim = None
+            self.feature_mean = None
+            self.feature_std = None
             return
         features = torch.cat(
             [feature.detach().float().cpu() for feature, _ in pairs],
@@ -240,6 +271,8 @@ class NormalMLReverseEngineer:
             raise ValueError("reverse-engineering feature shape changed")
         normalized = (features - self.feature_mean) / self.feature_std
         with torch.no_grad():
+            if self.training_mode == "binary":
+                return self.model(normalized).squeeze(-1)
             return self.model(normalized.unsqueeze(0)).squeeze(0).squeeze(-1)
 
     def predict_proba_features(self, features: Tensor) -> Tensor:
@@ -257,9 +290,7 @@ class NormalMLReverseEngineer:
             weight = params.weight.detach().float().cpu().reshape(1, -1)
             weight = weight.expand(samples.shape[0], -1)
             bias = torch.full((samples.shape[0], 1), float(params.bias))
-            feature_pairs.append(
-                (torch.cat((samples, weight, bias), dim=1), target)
-            )
+            feature_pairs.append((torch.cat((samples, weight, bias), dim=1), target))
         self.fit_feature_pairs(feature_pairs)
 
     def predict_proba(
@@ -331,11 +362,16 @@ class NormalMLReverseEngineer:
         self.feature_dim = int(feature_dim)
         self.feature_mean = feature_mean.detach().cpu().clone()
         self.feature_std = feature_std.detach().cpu().clone()
-        model = _FeatureReverseModel(
-            self.feature_dim,
-            self.hidden_size,
-            self.num_heads,
-            self.num_layers,
-        )
+        if self.training_mode == "binary":
+            model: nn.Module = _BinaryFeatureReverseModel(
+                self.feature_dim, self.hidden_size
+            )
+        else:
+            model = _FeatureReverseModel(
+                self.feature_dim,
+                self.hidden_size,
+                self.num_heads,
+                self.num_layers,
+            )
         model.load_state_dict(model_state)
         self.model = model.eval()

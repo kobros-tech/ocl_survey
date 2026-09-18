@@ -10,8 +10,9 @@ from .behavior import (
     reverse_engineer_y_from_weights,
 )
 from .decision import find_best_skill
+from .diagnostics import class_index_alignment_report
+from .evaluation import RoutingResult, find_best_routing_skill
 from .fingerprint_routing import PersistentFingerprintSkillMemoryPlugin
-from .probing import RoutingResult, find_best_routing_skill
 from .reverse_engineering import CandidateParameters, NormalMLReverseEngineer
 from .skill_memory_plugin import SkillMemoryPlugin
 from .skill_registry import ClassRecord, ExperienceClassMap, SkillMemory
@@ -27,6 +28,7 @@ __all__ = [
     "SkillMemoryPlugin",
     "PersistentFingerprintSkillMemoryPlugin",
     "NormalMLReverseEngineer",
+    "class_index_alignment_report",
     "compare_binary_behavior",
     "identify_binary_behavior",
     "reverse_engineer_scores_from_weights",

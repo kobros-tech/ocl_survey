@@ -1,14 +1,12 @@
 """Class-aware probing and model-state helpers.
 
-Training-time probing is always class-scoped.  The only intentionally
-multi-class probe is ``probe_whole_experience``, reserved for blind
-input-only evaluation routing.
+This module only samples data and applies/evaluates stored model states.
+Routing and decision logic belongs to evaluation and decision modules.
 """
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from collections.abc import Mapping
 
 import numpy as np
 import torch
@@ -24,20 +22,11 @@ def origin_experience(experience):
     return getattr(experience, "origin_experience", experience)
 
 
-# Cache of {id(dataset): (dataset, {class_id: [indices]})}. Keeping the
-# dataset object in the value prevents Python from recycling its id while a
-# stale cache entry is still alive. This matters for Avalanche sub-experiences:
-# their dataset wrappers can be short-lived even though the logical experience
-# continues across several sub-experiences.
-#
-# Labels are read from the actual dataset samples rather than an optional
-# `.targets` attribute. Avalanche's FlatData/Subsets can expose metadata whose
-# indexing semantics do not necessarily match the logical experience dataset.
 _CLASS_INDEX_CACHE: dict[int, tuple[object, dict[int, list[int]]]] = {}
 
 
 def _class_index_map(experience) -> dict[int, list[int]]:
-    """Build the class -> sample-index map from actual dataset samples."""
+    """Build the class-to-sample index map from actual dataset samples."""
     dataset = experience.dataset
     cache_key = id(dataset)
     cached = _CLASS_INDEX_CACHE.get(cache_key)
@@ -60,12 +49,7 @@ def _class_index_map(experience) -> dict[int, list[int]]:
 
 
 def classes_in_experience(experience) -> list[int]:
-    """Return the distinct labels actually present in the dataset.
-
-    We intentionally inspect dataset content rather than trusting an
-    experience-level class declaration.  That prevents routing decisions
-    from being based on metadata that can disagree with the samples.
-    """
+    """Return distinct labels actually present in the experience dataset."""
     return sorted(_class_index_map(experience))
 
 
@@ -94,7 +78,6 @@ def _sample_batches(dataset, batch_size: int, n_batches: int, seed: int | None):
         shuffle=True,
         generator=generator,
     )
-
     xs, ys = [], []
     iterator = iter(loader)
     for _ in range(n_batches):
@@ -104,7 +87,6 @@ def _sample_batches(dataset, batch_size: int, n_batches: int, seed: int | None):
             break
         xs.append(x)
         ys.append(y)
-
     if not xs:
         raise RuntimeError("Probe loader produced no batches")
     return torch.cat(xs), torch.cat(ys)
@@ -123,7 +105,7 @@ def probe_class(
 
 
 def probe_whole_experience(experience, batch_size: int, n_batches: int, seed=None):
-    """Unfiltered probe; use only when labels are intentionally ignored."""
+    """Return an unfiltered input/label probe for evaluation callers."""
     return _sample_batches(experience.dataset, batch_size, n_batches, seed)
 
 
@@ -151,7 +133,6 @@ def resize_incremental_classifiers_for_state(
             module.classifier.in_features,
             target_weight.shape[0],
         ).to(device=device, dtype=dtype)
-
         active_key = f"{prefix}active_units"
         if active_key in state_dict:
             module.active_units = state_dict[active_key].to(device=device).clone()
@@ -167,6 +148,20 @@ def incremental_out_features(
         weight = state_dict.get(f"{prefix}classifier.weight")
         if weight is not None and weight.ndim == 2:
             return int(weight.shape[0])
+    return None
+
+
+def incremental_active_units(
+    model: nn.Module, state_dict: Mapping[str, Tensor]
+) -> Tensor | None:
+    """Return the stored ``active_units`` mask for a skill's classifier head."""
+    for module_name, module in model.named_modules():
+        if not isinstance(module, IncrementalClassifier):
+            continue
+        prefix = f"{module_name}." if module_name else ""
+        active = state_dict.get(f"{prefix}active_units")
+        if active is not None:
+            return active
     return None
 
 
@@ -214,21 +209,7 @@ def apply_skill_state_exact(model: nn.Module, state_dict: Mapping[str, Tensor]) 
 def evaluate_state(
     model, state_dict, x, y, criterion, adaptation_experience=None
 ) -> tuple[float, float, float]:
-    """Evaluate a stored snapshot on already-filtered class data.
-
-    ``model`` is a scratch module the caller builds ONCE (e.g. one
-    `deepcopy(strategy.model)` per decision) and reuses across every
-    candidate skill being scored; this function just overwrites its
-    weights in place via `load_state_dict` rather than deep-copying the
-    whole module again per candidate. Deep-copying a full model is far
-    more expensive than swapping a state_dict, and doing it once per
-    skill instead of once per decision is what made per-class decisions
-    scale with the total number of stored skills.
-
-    If the snapshot predates the current class head, ``adaptation_experience``
-    is used only to grow the Avalanche dynamic head.  The probe data itself
-    must already be class-filtered; the experience is never sampled here.
-    """
+    """Evaluate a stored snapshot on already-filtered class data."""
     apply_skill_state_exact(model, state_dict)
     if adaptation_experience is not None:
         prepare_for_experience(model, adaptation_experience)
@@ -259,155 +240,17 @@ def expand_skill_logits(
 ) -> Tensor:
     """Pad global classifier logits without remapping class columns."""
     del state_dict, skill_classes
-
     result = logits.new_full((logits.shape[0], output_dim), -1e4)
     width = min(logits.shape[1], output_dim)
     result[:, :width] = logits[:, :width]
     return result
 
 
-@dataclass(frozen=True)
-class RoutingResult:
-    """Input-only skill-routing result for one minibatch.
-
-    ``probabilities`` are softmax-normalized routing scores across the
-    available skills. They are useful as relative routing confidence, but
-    they are not calibrated probabilities of correctness.
-    """
-
-    skill_indices: Tensor
-    probabilities: Tensor
-    best_probability: Tensor
-    second_probability: Tensor
-    confidence_gap: Tensor
-
-
-def _routing_scores(
-    raw_skill_logits: Sequence[torch.Tensor],
-    states: Sequence[Mapping[str, torch.Tensor]],
-    skill_classes: Sequence[Sequence[int]],
-) -> torch.Tensor:
-    """Score each skill by probability mass on its owned classes."""
-    del states
-
-    scores = []
-    for logits, owned_classes in zip(raw_skill_logits, skill_classes, strict=False):
-        if not owned_classes:
-            scores.append(torch.zeros(logits.shape[0], device=logits.device))
-            continue
-
-        valid_classes = sorted(
-            class_id for class_id in owned_classes if 0 <= class_id < logits.shape[1]
-        )
-        if not valid_classes:
-            scores.append(torch.zeros(logits.shape[0], device=logits.device))
-            continue
-
-        if logits.shape[1] == 1:
-            # A single-output-unit skill (the shared head hasn't grown
-            # past its first class yet) has no other column to
-            # normalize against -- softmax over one value is trivially
-            # always 1.0, which would erase all signal. Use a sigmoid
-            # of the raw logit instead: still bounded to [0, 1], still
-            # monotonic in the raw value, and degenerates sensibly
-            # (a very negative logit -> low confidence, not a fixed 1.0).
-            scores.append(torch.sigmoid(logits[:, 0]))
-            continue
-
-        probabilities = torch.softmax(logits, dim=1)
-        scores.append(probabilities[:, valid_classes].sum(dim=1))
-
-    if not scores:
-        raise RuntimeError("No skills available for probe routing.")
-
-    return torch.stack(scores, dim=0)
-
-
-def _normalize_routing_scores(
-    scores: torch.Tensor,
-    temperature: float,
-) -> torch.Tensor:
-    """Normalize [0, 1] routing scores without a hard threshold."""
-    if temperature <= 0:
-        raise ValueError("temperature must be positive")
-
-    powered = scores.clamp_min(0).pow(1.0 / temperature)
-    totals = powered.sum(dim=0, keepdim=True)
-    eps = torch.finfo(powered.dtype).eps
-    probabilities = powered / totals.clamp_min(eps)
-
-    zero_total = totals.squeeze(0) <= 0
-    if zero_total.any():
-        probabilities = probabilities.clone()
-        probabilities[:, zero_total] = 1.0 / probabilities.shape[0]
-
-    return probabilities
-
-
-def find_best_routing_skill(
-    raw_skill_logits: list[Tensor],
-    states: list[Mapping[str, Tensor]],
-    skill_classes: list[set[int]],
-    temperature: float = 1.0,
-) -> RoutingResult:
-    """Find the best stored skill for every unlabeled probe sample.
-
-    ``raw_skill_logits`` must contain one ``[batch, output_dim]`` tensor per
-    stored skill. The function never receives labels. For every sample it
-    computes each skill's own-class probability mass (see `_routing_scores`
-    -- the unsupervised counterpart of the training-time
-    `score_from_loss`/`score_floor=0.9` decision score), then normalizes
-    across skills via `_normalize_routing_scores` and returns the winning
-    skill with top-1/top-2 routing diagnostics.
-
-    Unlike an earlier version of this function, the per-skill scores fed
-    into this normalization are already bounded, comparable [0, 1]
-    probability masses (not raw, unnormalized logits), so this step is a
-    genuine relative-confidence display, not a no-op wrapper around a
-    still-broken ranking.
-
-    If every skill's owned-class probability mass is zero for a sample
-    (no skill claims a class present in its own output, or the sample's
-    "no usable columns" case), `_normalize_routing_scores` falls back to
-    a uniform distribution over skills for that sample rather than
-    silently defaulting to skill 0 -- an all-zero row would otherwise
-    make skill 0 win purely by array position, not by any evidence.
-
-    The returned values are normalized routing probabilities, not
-    calibrated probabilities of correctness.
-    """
-    scores = _routing_scores(raw_skill_logits, states, skill_classes)
-    probabilities = _normalize_routing_scores(scores, temperature)
-    skill_indices = probabilities.argmax(dim=0)
-
-    if probabilities.shape[0] == 1:
-        best_probability = probabilities[0]
-        second_probability = torch.zeros_like(best_probability)
-    else:
-        top2 = torch.topk(probabilities, k=2, dim=0).values
-        best_probability = top2[0]
-        second_probability = top2[1]
-
-    return RoutingResult(
-        skill_indices=skill_indices,
-        probabilities=probabilities,
-        best_probability=best_probability,
-        second_probability=second_probability,
-        confidence_gap=best_probability - second_probability,
-    )
-
-
-def route_probe_logits(
-    raw_skill_logits: list[Tensor],
-    states: list[Mapping[str, Tensor]],
-    skill_classes: list[set[int]],
-) -> Tensor:
-    """Select the best skill for each probe sample.
-
-    This compatibility wrapper preserves the v0.1.4 return type while the
-    richer ``find_best_routing_skill`` API exposes routing probabilities and
-    diagnostics.
-    """
-    return find_best_routing_skill(
-        raw_skill_logits, states, skill_classes
-    ).skill_indices
+# Compatibility re-exports only. The implementations live in evaluation.py;
+# probing itself contains no routing/decision logic. The `as`-aliases below
+# are required so linters treat these as intentional re-exports rather than
+# unused imports; removing them silently breaks `skill_memory_plugin.py`'s
+# `from .probing import find_best_routing_skill`.
+from .evaluation import RoutingResult as RoutingResult  # noqa: E402
+from .evaluation import find_best_routing_skill as find_best_routing_skill  # noqa: E402
+from .evaluation import route_probe_logits as route_probe_logits  # noqa: E402

@@ -78,7 +78,9 @@ def test_refresh_rebuilds_all_classes_from_current_skill_states():
 
     assert result == {
         "records_seen": 2,
+        "records_attempted": 2,
         "records_refreshed": 2,
+        "records_invalid": 0,
         "records_skipped": 0,
         "skills_refreshed": 2,
     }
@@ -94,6 +96,7 @@ def test_refresh_rebuilds_all_classes_from_current_skill_states():
 
 def test_refresh_skips_classes_without_a_current_canonical_skill():
     records = [_record(10, 0, 10.0), _record(99, 9, 99.0)]
+    written = []
 
     class Behavior:
         def state_dict(self):
@@ -106,7 +109,58 @@ def test_refresh_skips_classes_without_a_current_canonical_skill():
             del skill_id, version, state
 
         def put(self, record):
-            raise AssertionError("unmapped class must not be rebuilt")
+            written.append(record.class_id)
+
+    class ClassMap:
+        def find_skill_for_class_anywhere(self, class_id):
+            return 0 if class_id == 10 else None
+
+    class Memory:
+        def state(self, skill_id):
+            return {"value": torch.tensor(float(skill_id))}
+
+    def build_record(strategy, skill_id, class_id, x, version, state):
+        del strategy, skill_id, version, state
+        return SimpleNamespace(class_id=class_id, reference_inputs=x)
+
+    plugin = SimpleNamespace(
+        behavior=Behavior(),
+        class_map=ClassMap(),
+        memory=Memory(),
+        _build_record=build_record,
+        _behavior_initialized=True,
+    )
+
+    result = MODULE.refresh_all_fingerprints(plugin, object())
+
+    assert result["records_seen"] == 2
+    assert result["records_attempted"] == 1
+    assert result["records_refreshed"] == 1
+    assert result["records_invalid"] == 0
+    assert result["records_skipped"] == 1
+    assert result["skills_refreshed"] == 1
+    assert written == [10]
+    assert plugin._behavior_initialized is True
+
+
+def test_refresh_does_not_report_invalid_rebuilds_as_refreshed():
+    """A mapped class whose rebuilt record comes back invalid (None) must
+    not be written to behavior storage, and must not be counted under
+    records_refreshed - it should show up under records_invalid instead."""
+    records = [_record(10, 0, 10.0)]
+
+    class Behavior:
+        def state_dict(self):
+            return {"records": records}
+
+        def skill_version(self, skill_id):
+            return 0
+
+        def put_skill_state(self, skill_id, version, state):
+            del skill_id, version, state
+
+        def put(self, record):
+            raise AssertionError("an invalid rebuild must never be stored")
 
     class ClassMap:
         def find_skill_for_class_anywhere(self, class_id):
@@ -126,7 +180,10 @@ def test_refresh_skips_classes_without_a_current_canonical_skill():
 
     result = MODULE.refresh_all_fingerprints(plugin, object())
 
-    assert result["records_seen"] == 2
-    assert result["records_refreshed"] == 1
-    assert result["records_skipped"] == 1
+    assert result["records_seen"] == 1
+    assert result["records_attempted"] == 1
+    assert result["records_refreshed"] == 0
+    assert result["records_invalid"] == 1
+    assert result["records_skipped"] == 0
+    assert result["skills_refreshed"] == 0
     assert plugin._behavior_initialized is True

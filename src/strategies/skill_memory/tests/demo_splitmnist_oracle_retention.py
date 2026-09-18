@@ -85,8 +85,9 @@ def main() -> None:
             f"{class_id}: {decision['decision']}"
             for class_id, decision in sorted(decisions.items())
         )
+        classes = sorted(train_exp.classes_in_this_experience)
         print(
-            f"Step {train_index}: classes={sorted(train_exp.classes_in_this_experience)} "
+            f"Step {train_index}: classes={classes} "
             f"class->skill={assignments} decisions={{{decision_text}}}"
         )
         print(

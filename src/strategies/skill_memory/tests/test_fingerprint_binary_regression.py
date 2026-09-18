@@ -1,73 +1,97 @@
-"""Regression tests for binary behavior inside persistent routing."""
+"""Regression tests for the current listwise reverse router."""
 
 from types import SimpleNamespace
 
 import torch
-from torch import nn
 
-import skill_memory.fingerprint_routing as fingerprint_routing
-from skill_memory import ClassBehaviorRecord, SkillMemory
+from skill_memory import ClassBehaviorRecord
 from skill_memory.fingerprint_routing import PersistentFingerprintSkillMemoryPlugin
 
 
-class DummyModel(nn.Module):
-    def __init__(self):
-        super().__init__()
-        self.parameter = nn.Parameter(torch.tensor(0.0))
+def _record(class_id: int, skill_id: int) -> ClassBehaviorRecord:
+    return ClassBehaviorRecord(
+        class_id=class_id,
+        skill_id=skill_id,
+        version=0,
+        reference_inputs=torch.zeros(1, 1),
+        reference_y=torch.ones(1, dtype=torch.bool),
+        reference_weight=torch.tensor([1.0]),
+        reference_bias=0.0,
+    )
 
 
-def test_router_uses_candidate_score_not_argmax(monkeypatch):
-    """A positive candidate score remains compatible below another class."""
+def test_router_scores_complete_candidate_set_without_argmax_shortcut(monkeypatch):
+    # diagnose=True: this test asserts on the per-candidate breakdown, which
+    # is only populated when diagnostics are requested (see
+    # fingerprint_routing.PersistentFingerprintSkillMemoryPlugin).
     plugin = PersistentFingerprintSkillMemoryPlugin(
-        memory=SkillMemory(max_skills=1),
-        verbose=False,
+        verbose=False, reverse_epochs=1, diagnose=True
     )
-    state = {"parameter": torch.tensor(0.0)}
-    plugin.memory.store(0, state)
-    plugin.behavior.put_skill_state(0, 0, state)
-    plugin.behavior.put(
-        ClassBehaviorRecord(
-            class_id=0,
-            skill_id=0,
-            version=0,
-            reference_inputs=torch.zeros(1, 1),
-            reference_y=torch.ones(1, dtype=torch.bool),
-            reference_feature_mean=torch.tensor([1.0]),
-            reference_feature_std=torch.ones(1),
-            reference_margin_mean=1.0,
-            reference_margin_std=1.0,
-        )
-    )
+    plugin.behavior.put(_record(0, 0))
+    plugin.behavior.put(_record(1, 1))
+    plugin._reverse_output_dim = 2
+    plugin._reverse_candidate_dim = 1
 
-    monkeypatch.setattr(
-        fingerprint_routing,
-        "apply_skill_state_exact",
-        lambda model, state_dict: None,
-    )
-    monkeypatch.setattr(
-        fingerprint_routing,
-        "extract_features_from_weights",
-        lambda model, x: torch.tensor([[1.0]]),
-    )
-    monkeypatch.setattr(
-        fingerprint_routing,
-        "reverse_engineer_scores_from_weights",
-        lambda model, x: torch.tensor([[0.5, 2.0]]),
-    )
+    def frozen_logits(_strategy, skill_id, x):
+        logits = torch.full((x.shape[0], 2), -2.0)
+        target = skill_id
+        logits[:, target] = 3.0
+        return logits
 
-    strategy = SimpleNamespace(model=DummyModel())
-    plugin._behavior_initialized = True
-    chosen, classes = plugin._fingerprint_route(
-        strategy,
+    class FakeReverse:
+        model = object()
+
+        @staticmethod
+        def predict_scores_features(features):
+            return features[:, 5]
+
+    plugin.reverse_engineer = FakeReverse()
+    monkeypatch.setattr(plugin, "_frozen_logits", frozen_logits)
+
+    chosen, classes = plugin._route(
+        SimpleNamespace(model=object()),
         torch.zeros(1, 1),
-        [0],
+        [0, 1],
     )
 
-    route = plugin.last_fingerprint_routes[0]
-    candidate = route["candidates"][0]
-    assert route["status"] == "IDENTIFIED"
-    assert candidate["predicted_class"] == 1
-    assert candidate["predicted_y"] is True
-    assert candidate["binary_compatible"] is True
     assert chosen.tolist() == [0]
     assert classes == [0]
+    assert len(plugin.last_fingerprint_routes[0]["candidates"]) == 2
+
+
+def test_router_skips_candidate_breakdown_when_not_diagnosing(monkeypatch):
+    """diagnose=False (the default) must still route correctly, but must not
+    pay for building the per-candidate diagnostic breakdown that only
+    routing_rank_diagnostics consumes."""
+    plugin = PersistentFingerprintSkillMemoryPlugin(verbose=False, reverse_epochs=1)
+    assert plugin.diagnose is False
+    plugin.behavior.put(_record(0, 0))
+    plugin.behavior.put(_record(1, 1))
+    plugin._reverse_output_dim = 2
+    plugin._reverse_candidate_dim = 1
+
+    def frozen_logits(_strategy, skill_id, x):
+        logits = torch.full((x.shape[0], 2), -2.0)
+        target = skill_id
+        logits[:, target] = 3.0
+        return logits
+
+    class FakeReverse:
+        model = object()
+
+        @staticmethod
+        def predict_scores_features(features):
+            return features[:, 5]
+
+    plugin.reverse_engineer = FakeReverse()
+    monkeypatch.setattr(plugin, "_frozen_logits", frozen_logits)
+
+    chosen, classes = plugin._route(
+        SimpleNamespace(model=object()),
+        torch.zeros(1, 1),
+        [0, 1],
+    )
+
+    assert chosen.tolist() == [0]
+    assert classes == [0]
+    assert "candidates" not in plugin.last_fingerprint_routes[0]

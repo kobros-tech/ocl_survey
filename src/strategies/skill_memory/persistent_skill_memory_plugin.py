@@ -33,11 +33,12 @@ class PersistentFingerprintSkillMemoryPlugin(SkillMemoryPlugin):
         *args,
         reverse_engineer_y_fn: Callable | None = None,
         reverse_hidden_size: int = 64,
-        reverse_epochs: int = 200,
+        reverse_epochs: int = 60,
         reverse_learning_rate: float = 1e-3,
         reverse_seed: int = 0,
         reverse_batch_size: int = 256,
         reverse_training_mode: str = "listwise",
+        record_candidate_diagnostics: bool = True,
         **kwargs,
     ):
         kwargs.setdefault("reuse_is_mutable", False)
@@ -60,6 +61,32 @@ class PersistentFingerprintSkillMemoryPlugin(SkillMemoryPlugin):
         self.fingerprint_route_history: list[dict] = []
         self._fingerprint_batch_index = 0
         self._evaluation_experience_index: int | None = None
+        # Cache of already-deepcopied-and-loaded models, keyed by skill_id.
+        # `_frozen_logits` used to deepcopy(strategy.model) + load state on
+        # *every* call; for `_fit_reverse_router` that meant records x slots
+        # deepcopies (~10,000 for a 100-skill/100-class setup), and for
+        # `_route` it meant re-deepcopying the same candidate's model on
+        # every evaluation batch. Cleared at the start of every
+        # `_fit_reverse_router` call (see there), so it always reflects the
+        # currently fitted generation of skills and never serves a stale
+        # model - within that window it is safe to reuse across every
+        # `_fit_reverse_router`/`_route` call, since nothing mutates a
+        # skill's frozen state between one fit and the following
+        # evaluation batches.
+        self._frozen_model_cache: dict[int, Any] = {}
+        # Reference logits are immutable for a given skill generation and
+        # reference class. Keep them across router refits so old
+        # record/skill pairs are not recomputed after every new experience.
+        # The skill generation is part of the key, so a mutable REUSE or
+        # SCRATCH replacement naturally gets a fresh cache entry.
+        self._reference_logits_cache: dict[tuple[int, int, int], Tensor] = {}
+        # When False, `_route` skips building the per-sample, per-candidate
+        # "candidates" breakdown (one dict + one GPU->CPU sync per candidate
+        # per sample). That breakdown only feeds `routing_rank_diagnostics`,
+        # so callers that never inspect diagnostics (the common eval-time
+        # path) can turn it off to remove that overhead entirely instead of
+        # building it and throwing it away afterwards.
+        self.record_candidate_diagnostics = bool(record_candidate_diagnostics)
 
     @staticmethod
     def _pad_logits(logits: Tensor, output_dim: int) -> Tensor:
@@ -89,14 +116,26 @@ class PersistentFingerprintSkillMemoryPlugin(SkillMemoryPlugin):
         samples = x.detach().float().cpu().reshape(x.shape[0], -1)
         padded = cls._pad_logits(logits.detach().float().cpu(), output_dim)
         probabilities = torch.softmax(padded, dim=-1)
-        if candidate_class_id is None or not 0 <= candidate_class_id < output_dim:
+        if candidate_class_id is None:
             candidate_logit = torch.zeros((samples.shape[0], 1))
             candidate_probability = torch.zeros((samples.shape[0], 1))
         else:
+            if not 0 <= candidate_class_id < output_dim:
+                # A candidate's own class logit must live within its own
+                # frozen response once `_fit_reverse_router` has widened
+                # `output_dim` to cover every current candidate's class_id
+                # (see the comment there). Reaching this branch means that
+                # invariant broke silently upstream - route with a zeroed
+                # feature instead of a real signal, which would look like a
+                # routing failure rather than a bug. Fail loudly instead.
+                raise RuntimeError(
+                    f"candidate class_id {candidate_class_id} is outside the "
+                    f"routed output space (output_dim={output_dim}); the "
+                    "reverse router's output_dim was not widened to cover "
+                    "this candidate before routing"
+                )
             candidate_logit = padded[:, candidate_class_id].reshape(-1, 1)
-            candidate_probability = probabilities[:, candidate_class_id].reshape(
-                -1, 1
-            )
+            candidate_probability = probabilities[:, candidate_class_id].reshape(-1, 1)
         weight = candidate_weight.detach().float().cpu().reshape(1, -1)
         weight = weight.expand(samples.shape[0], -1)
         bias = torch.full((samples.shape[0], 1), float(candidate_bias))
@@ -105,9 +144,7 @@ class PersistentFingerprintSkillMemoryPlugin(SkillMemoryPlugin):
             interaction = samples * weight
             sample_norm = samples.norm(dim=1, keepdim=True).clamp_min(1e-8)
             weight_norm = weight.norm(dim=1, keepdim=True).clamp_min(1e-8)
-            cosine = interaction.sum(dim=1, keepdim=True) / (
-                sample_norm * weight_norm
-            )
+            cosine = interaction.sum(dim=1, keepdim=True) / (sample_norm * weight_norm)
             dot_product = interaction.sum(dim=1, keepdim=True)
         else:
             interaction = torch.zeros_like(weight)
@@ -130,13 +167,17 @@ class PersistentFingerprintSkillMemoryPlugin(SkillMemoryPlugin):
             dim=1,
         )
 
-    def _frozen_logits(
-        self,
-        strategy,
-        skill_id: int,
-        x: Tensor,
-    ) -> Tensor:
-        """Evaluate one immutable stored skill without changing the live model."""
+    def _load_frozen_model(self, strategy, skill_id: int) -> Any:
+        """Return a deepcopied, state-loaded model for one skill, cached.
+
+        Deepcopy + `apply_skill_state_exact` happens at most once per
+        skill_id between cache clears (see `_frozen_model_cache`'s
+        docstring in `__init__`), regardless of how many records or
+        evaluation batches subsequently query this skill.
+        """
+        cached = self._frozen_model_cache.get(skill_id)
+        if cached is not None:
+            return cached
         records = self.behavior.records_for_skill(skill_id)
         if records:
             version = records[0].version
@@ -146,7 +187,22 @@ class PersistentFingerprintSkillMemoryPlugin(SkillMemoryPlugin):
         if state_dict is None:
             state_dict = self.memory.state(skill_id)
         model = deepcopy(strategy.model)
-        return predict_logits(model, state_dict, x).detach().cpu()
+        apply_skill_state_exact(model, state_dict)
+        model.eval()
+        self._frozen_model_cache[skill_id] = model
+        return model
+
+    def _frozen_logits(
+        self,
+        strategy,
+        skill_id: int,
+        x: Tensor,
+    ) -> Tensor:
+        """Evaluate one immutable stored skill without changing the live model."""
+        model = self._load_frozen_model(strategy, skill_id)
+        device = next(model.parameters()).device
+        with torch.no_grad():
+            return model(x.to(device)).detach().cpu()
 
     def _build_record(
         self,
@@ -267,7 +323,9 @@ class PersistentFingerprintSkillMemoryPlugin(SkillMemoryPlugin):
             self._refresh_skill(strategy, skill_id, experience)
         for class_id, x in sorted(pending.items()):
             skill_id = self.class_map.find_skill_for_class_anywhere(class_id)
-            if skill_id is None or self.behavior.get(class_id, int(skill_id)) is not None:
+            if skill_id is None:
+                continue
+            if self.behavior.get(class_id, int(skill_id)) is not None:
                 continue
             skill_id = int(skill_id)
             version = self.behavior.skill_version(skill_id)
@@ -287,6 +345,13 @@ class PersistentFingerprintSkillMemoryPlugin(SkillMemoryPlugin):
 
     def _fit_reverse_router(self, strategy) -> None:
         """Fit from candidate sets using the same candidate behavior as routing."""
+        # Fresh generation boundary: any models cached from the previous fit
+        # (or the evaluation batches that followed it) are no longer
+        # guaranteed to match the current skill states, so start clean here
+        # rather than risk serving a stale model. Populated once below and
+        # then reused for the rest of this fit *and* every `_route` call in
+        # the evaluation phase that follows it.
+        self._frozen_model_cache = {}
         slot_ids = sorted(self.memory.slots())
         records = [
             record
@@ -308,8 +373,25 @@ class PersistentFingerprintSkillMemoryPlugin(SkillMemoryPlugin):
                 if record.reference_weight is not None
                 else 0,
             )
-            for slot in slot_ids:
-                logits = self._frozen_logits(strategy, slot, record.reference_inputs)
+        # `_load_frozen_model` (inside `_frozen_logits`) deepcopies the live
+        # model once per skill_id and caches it, so every record sharing a
+        # slot reuses the same loaded model instead of re-deepcopying it.
+        # This turns what used to be `len(records) * len(slot_ids)`
+        # deepcopies into `len(slot_ids)` - e.g. ~100 instead of ~10,000 for
+        # a 100-record / 100-skill setup - with identical results, since
+        # nothing about what's computed changes, only how many times the
+        # same frozen response gets recomputed.
+        frozen_cache: dict[tuple[int, int], Tensor] = {}
+        for slot in slot_ids:
+            for record in records:
+                key = (int(slot), int(record.version), int(record.class_id))
+                logits = self._reference_logits_cache.get(key)
+                if logits is None:
+                    logits = self._frozen_logits(
+                        strategy, slot, record.reference_inputs
+                    )
+                    self._reference_logits_cache[key] = logits.clone()
+                frozen_cache[(record.class_id, slot)] = logits
                 output_dim = max(output_dim, int(logits.shape[-1]))
         if candidate_dim == 0:
             raise RuntimeError("reverse router requires stored candidate class weights")
@@ -326,42 +408,69 @@ class PersistentFingerprintSkillMemoryPlugin(SkillMemoryPlugin):
         if len(class_to_candidate) != len(candidates):
             raise RuntimeError("reverse router requires one candidate record per class")
 
+        # A candidate's own class logit lives at column `candidate.class_id` in
+        # that candidate's frozen response (Avalanche's IncrementalClassifier
+        # indexes its output units by the raw class label, not a compacted
+        # per-skill position). `output_dim` above is only the *observed*
+        # width of the frozen responses seen so far; if it ends up smaller
+        # than a candidate's own class_id (e.g. a stale/older skill capped
+        # the max, or a candidate's classifier was queried before it grew to
+        # cover its own class), `_pad_logits` would silently truncate away
+        # that exact column and every candidate beyond it would score as an
+        # all-zero feature instead of raising. Explicitly widen output_dim so
+        # every current candidate's own column is always in range.
+        if candidates:
+            output_dim = max(output_dim, max(c.class_id for c in candidates) + 1)
+
         self._reverse_output_dim = output_dim
         self._reverse_candidate_dim = candidate_dim
         candidate_logits: dict[tuple[int, int], Tensor] = {}
         for record in records:
             for candidate in candidates:
                 key = (record.class_id, candidate.skill_id)
-                if key not in candidate_logits:
-                    candidate_logits[key] = self._frozen_logits(
+                cached = frozen_cache.get(key)
+                candidate_logits[key] = (
+                    cached
+                    if cached is not None
+                    else self._frozen_logits(
                         strategy, candidate.skill_id, record.reference_inputs
                     )
+                )
 
         candidate_sets: list[tuple[Tensor, int]] = []
         for record in records:
             target_index = class_to_candidate.get(record.class_id)
             if target_index is None:
                 continue
-            feature_rows: list[Tensor] = []
-            for sample_index in range(record.reference_inputs.shape[0]):
-                rows = []
-                for candidate in candidates:
-                    logits = candidate_logits[(record.class_id, candidate.skill_id)]
-                    rows.append(
-                        self._make_features(
-                            record.reference_inputs[sample_index : sample_index + 1],
-                            logits[sample_index : sample_index + 1],
-                            candidate.reference_weight,
-                            candidate.reference_bias,
-                            output_dim,
-                            candidate.class_id,
-                        ).squeeze(0)
+
+            # _make_features already accepts a batch of reference samples.
+            # Build one [samples, candidates, features] tensor per record
+            # instead of invoking it once for every sample/candidate pair.
+            # This removes the innermost Python loop and repeated tensor/CPU
+            # allocations without changing feature values or candidate order.
+            candidate_features = []
+            for candidate in candidates:
+                logits = candidate_logits[(record.class_id, candidate.skill_id)]
+                candidate_features.append(
+                    self._make_features(
+                        record.reference_inputs,
+                        logits,
+                        candidate.reference_weight,
+                        candidate.reference_bias,
+                        output_dim,
+                        candidate.class_id,
                     )
-                feature_rows.append(torch.stack(rows, dim=0))
-            candidate_sets.extend((rows, target_index) for rows in feature_rows)
+                )
+            features = torch.stack(candidate_features, dim=1)
+            candidate_sets.extend(
+                (features[sample_index], target_index)
+                for sample_index in range(features.shape[0])
+            )
         self.reverse_engineer.fit_candidate_sets(candidate_sets)
 
-    def _route(self, strategy, x: Tensor, slot_ids: list[int]) -> tuple[Tensor, list[int]]:
+    def _route(
+        self, strategy, x: Tensor, slot_ids: list[int]
+    ) -> tuple[Tensor, list[int]]:
         """Route anonymously by listwise scoring of the complete candidate set."""
         if self.reverse_engineer.model is None or self._reverse_output_dim is None:
             raise RuntimeError("reverse router has not been fitted")
@@ -405,31 +514,29 @@ class PersistentFingerprintSkillMemoryPlugin(SkillMemoryPlugin):
             record, score = route_candidates[candidate_index]
             chosen_skills.append(record.skill_id)
             chosen_classes.append(record.class_id)
-            routes.append(
-                {
-                    "sample_index": sample_index,
-                    "status": "IDENTIFIED",
-                    "class": record.class_id,
-                    "skill": record.skill_id,
-                    "score": float(score[sample_index].item()),
-                    "probability": float(
-                        probabilities[sample_index, candidate_index].item()
-                    ),
-                    "candidates": [
-                        {
-                            "class": candidate.class_id,
-                            "skill": candidate.skill_id,
-                            "score": float(candidate_score[sample_index].item()),
-                            "probability": float(
-                                probabilities[sample_index, index].item()
-                            ),
-                        }
-                        for index, (candidate, candidate_score) in enumerate(
-                            route_candidates
-                        )
-                    ],
-                }
-            )
+            route = {
+                "sample_index": sample_index,
+                "status": "IDENTIFIED",
+                "class": record.class_id,
+                "skill": record.skill_id,
+                "score": float(score[sample_index].item()),
+                "probability": float(
+                    probabilities[sample_index, candidate_index].item()
+                ),
+            }
+            if self.record_candidate_diagnostics:
+                route["candidates"] = [
+                    {
+                        "class": candidate.class_id,
+                        "skill": candidate.skill_id,
+                        "score": float(candidate_score[sample_index].item()),
+                        "probability": float(probabilities[sample_index, index].item()),
+                    }
+                    for index, (candidate, candidate_score) in enumerate(
+                        route_candidates
+                    )
+                ]
+            routes.append(route)
         self.last_fingerprint_routes = routes
         return (
             torch.tensor(chosen_skills, dtype=torch.long, device=x.device),

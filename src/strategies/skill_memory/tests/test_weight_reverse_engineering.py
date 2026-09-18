@@ -14,10 +14,11 @@ class TinyClassifier(nn.Module):
     def __init__(self):
         super().__init__()
         self.features = nn.Linear(4, 3, bias=False)
-        self.classifier = IncrementalClassifier(3, initial_out_features=3)
+        self.classifier = IncrementalClassifier()
+        self.classifier.classifier = nn.Linear(3, 3)
 
     def forward(self, x):
-        return self.classifier(self.features(x))
+        return self.classifier.classifier(self.features(x))
 
 
 def test_weight_reconstruction_matches_classifier_output():
