@@ -489,7 +489,8 @@ class PersistentFingerprintSkillMemoryPlugin(SkillMemoryPlugin):
         if len({record.class_id for record in records}) != len(records):
             raise RuntimeError("reverse router requires one candidate record per class")
 
-        route_candidates: list[tuple[ClassBehaviorRecord, Tensor]] = []
+        route_candidates: list[ClassBehaviorRecord] = []
+        candidate_features: list[Tensor] = []
         for record in records:
             logits = self._frozen_logits(strategy, record.skill_id, x)
             features = self._make_features(
@@ -500,10 +501,25 @@ class PersistentFingerprintSkillMemoryPlugin(SkillMemoryPlugin):
                 self._reverse_output_dim,
                 record.class_id,
             )
-            score = self.reverse_engineer.predict_scores_features(features)
-            route_candidates.append((record, score))
+            route_candidates.append(record)
+            candidate_features.append(features)
 
-        scores = torch.stack([item[1] for item in route_candidates], dim=1)
+        # `predict_scores_candidate_sets` needs every candidate for one real
+        # sample together in a single attention sequence (see its
+        # docstring): stack candidate-major `[batch, feature_dim]` tensors
+        # into `[batch, candidates, feature_dim]` - one real forward pass
+        # for the whole eval batch, with each sample's own candidate set
+        # scored independently of every other sample in the batch. Scoring
+        # candidates one at a time across the batch (the previous approach)
+        # fed the model `[1, batch, feature_dim]` instead, so it attended
+        # across unrelated samples rather than across candidates, and
+        # silently returned the same collapsed answer for the whole batch
+        # regardless of each sample's actual class - correct only by
+        # coincidence when an experience (and therefore an eval batch) has
+        # just one true class, and wrong wherever it has more than one.
+        scores = self.reverse_engineer.predict_scores_candidate_sets(
+            torch.stack(candidate_features, dim=1)
+        )
         probabilities = torch.softmax(scores, dim=1)
         best = probabilities.argmax(dim=1)
         chosen_skills: list[int] = []
@@ -511,7 +527,7 @@ class PersistentFingerprintSkillMemoryPlugin(SkillMemoryPlugin):
         routes: list[dict[str, Any]] = []
         for sample_index in range(x.shape[0]):
             candidate_index = int(best[sample_index].item())
-            record, score = route_candidates[candidate_index]
+            record = route_candidates[candidate_index]
             chosen_skills.append(record.skill_id)
             chosen_classes.append(record.class_id)
             route = {
@@ -519,7 +535,7 @@ class PersistentFingerprintSkillMemoryPlugin(SkillMemoryPlugin):
                 "status": "IDENTIFIED",
                 "class": record.class_id,
                 "skill": record.skill_id,
-                "score": float(score[sample_index].item()),
+                "score": float(scores[sample_index, candidate_index].item()),
                 "probability": float(
                     probabilities[sample_index, candidate_index].item()
                 ),
@@ -529,12 +545,10 @@ class PersistentFingerprintSkillMemoryPlugin(SkillMemoryPlugin):
                     {
                         "class": candidate.class_id,
                         "skill": candidate.skill_id,
-                        "score": float(candidate_score[sample_index].item()),
+                        "score": float(scores[sample_index, index].item()),
                         "probability": float(probabilities[sample_index, index].item()),
                     }
-                    for index, (candidate, candidate_score) in enumerate(
-                        route_candidates
-                    )
+                    for index, candidate in enumerate(route_candidates)
                 ]
             routes.append(route)
         self.last_fingerprint_routes = routes

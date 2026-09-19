@@ -258,7 +258,21 @@ class NormalMLReverseEngineer:
         self._fit_model(features, targets)
 
     def predict_scores_features(self, features: Tensor) -> Tensor:
-        """Return unnormalized compatibility scores for candidate features."""
+        """Return unnormalized compatibility scores for candidate features.
+
+        In listwise mode, ``features`` must be *one* sample's full candidate
+        set: shape ``[candidates, feature_dim]``. Every candidate in it is
+        one token in a single attention sequence, matching how
+        `fit_candidate_sets` trains the model (see its docstring). Scoring
+        many real samples against one candidate at a time, by calling this
+        once per candidate across a batch of samples, does NOT do that - it
+        feeds the model a `[1, batch_of_samples, feature_dim]` tensor, so the
+        transformer attends across unrelated samples instead of across
+        candidates, silently producing one collapsed answer for the whole
+        batch instead of a real per-sample decision. Batched routing of many
+        real samples against the full candidate set must use
+        `predict_scores_candidate_sets` instead.
+        """
         if (
             self.model is None
             or self.feature_dim is None
@@ -274,6 +288,39 @@ class NormalMLReverseEngineer:
             if self.training_mode == "binary":
                 return self.model(normalized).squeeze(-1)
             return self.model(normalized.unsqueeze(0)).squeeze(0).squeeze(-1)
+
+    def predict_scores_candidate_sets(self, features: Tensor) -> Tensor:
+        """Score every candidate for a batch of real samples in one pass.
+
+        ``features`` must have shape ``[batch, candidates, feature_dim]`` -
+        the same convention `fit_candidate_sets` trains on, just with
+        ``batch`` real samples instead of reference points. Each sample's
+        ``candidates`` row is its own attention sequence; the batch
+        dimension is a genuine torch batch dimension throughout, so
+        real samples never attend to one another. Returns
+        ``[batch, candidates]`` scores. This is the correct way to route
+        many real samples against a full candidate set at once - see
+        `predict_scores_features`'s docstring for the bug this avoids.
+        """
+        if self.training_mode != "listwise":
+            raise RuntimeError(
+                "predict_scores_candidate_sets requires training_mode='listwise'"
+            )
+        if (
+            self.model is None
+            or self.feature_dim is None
+            or self.feature_mean is None
+            or self.feature_std is None
+        ):
+            raise RuntimeError("reverse-engineering model has not been fitted")
+        features = features.detach().float().cpu()
+        if features.ndim != 3 or features.shape[-1] != self.feature_dim:
+            raise ValueError(
+                "candidate-set features must be [batch, candidates, feature_dim]"
+            )
+        normalized = (features - self.feature_mean) / self.feature_std
+        with torch.no_grad():
+            return self.model(normalized).squeeze(-1)
 
     def predict_proba_features(self, features: Tensor) -> Tensor:
         """Return independent binary probabilities for compatibility mode."""

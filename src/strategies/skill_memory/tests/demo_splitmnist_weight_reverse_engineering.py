@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import argparse
 import csv
 import json
 import sys
@@ -436,8 +437,16 @@ def write_analysis_files(
     print("Analysis JSON saved to:", json_path)
 
 
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--n-experiences", type=int, default=10)
+    parser.add_argument("--dataset-root", default=None)
+    return parser.parse_args()
+
+
 def main() -> None:
     """Run the SplitMNIST anonymous weight reverse-engineering demo."""
+    args = parse_args()
     log_dir = Path(__file__).resolve().parent / "logs"
     log_dir.mkdir(parents=True, exist_ok=True)
     run_id = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -447,7 +456,10 @@ def main() -> None:
         sys.stdout = Tee(real_stdout, log_handle)
         try:
             device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-            benchmark = SplitMNIST(n_experiences=10, seed=0)
+            benchmark_kwargs = {"n_experiences": args.n_experiences, "seed": 0}
+            if args.dataset_root is not None:
+                benchmark_kwargs["dataset_root"] = args.dataset_root
+            benchmark = SplitMNIST(**benchmark_kwargs)
             model = SkillMemoryMLP(input_dim=784).to(device)
             optimizer = torch.optim.SGD(model.parameters(), lr=0.01)
             criterion = torch.nn.CrossEntropyLoss()

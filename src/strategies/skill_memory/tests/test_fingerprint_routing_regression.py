@@ -35,10 +35,11 @@ def test_listwise_router_uses_candidate_behavior(monkeypatch):
 
     class FakeReverse:
         model = object()
+        training_mode = "listwise"
 
         @staticmethod
-        def predict_scores_features(features):
-            return features[:, 6]
+        def predict_scores_candidate_sets(features):
+            return features[:, :, 6]
 
     plugin.reverse_engineer = FakeReverse()
     monkeypatch.setattr(plugin, "_frozen_logits", frozen_logits)

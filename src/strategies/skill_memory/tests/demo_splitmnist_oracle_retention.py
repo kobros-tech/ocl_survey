@@ -8,6 +8,7 @@ snapshots themselves retain old classes independently of fingerprint routing.
 
 from __future__ import annotations
 
+import argparse
 import json
 from datetime import datetime
 
@@ -44,10 +45,26 @@ def evaluate_seen(strategy, test_stream, up_to_index: int) -> list[float]:
     return [float(results[key]) for key in keys]
 
 
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--dataset-root", default="data")
+    parser.add_argument("--download-only", action="store_true")
+    parser.add_argument("--n-experiences", type=int, default=10)
+    return parser.parse_args()
+
+
 def main() -> None:
+    args = parse_args()
     run_id = datetime.now().strftime("%Y%m%d_%H%M%S")
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    benchmark = SplitMNIST(n_experiences=10, seed=0)
+    benchmark = SplitMNIST(
+        n_experiences=args.n_experiences,
+        seed=0,
+        dataset_root=args.dataset_root,
+    )
+    if args.download_only:
+        print(f"SplitMNIST dataset prepared at {args.dataset_root}")
+        return
 
     model = SkillMemoryMLP(input_dim=784).to(device)
     optimizer = torch.optim.SGD(model.parameters(), lr=0.01)

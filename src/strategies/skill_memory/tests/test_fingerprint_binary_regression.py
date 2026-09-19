@@ -40,10 +40,11 @@ def test_router_scores_complete_candidate_set_without_argmax_shortcut(monkeypatc
 
     class FakeReverse:
         model = object()
+        training_mode = "listwise"
 
         @staticmethod
-        def predict_scores_features(features):
-            return features[:, 5]
+        def predict_scores_candidate_sets(features):
+            return features[:, :, 5]
 
     plugin.reverse_engineer = FakeReverse()
     monkeypatch.setattr(plugin, "_frozen_logits", frozen_logits)
@@ -78,10 +79,11 @@ def test_router_skips_candidate_breakdown_when_not_diagnosing(monkeypatch):
 
     class FakeReverse:
         model = object()
+        training_mode = "listwise"
 
         @staticmethod
-        def predict_scores_features(features):
-            return features[:, 5]
+        def predict_scores_candidate_sets(features):
+            return features[:, :, 5]
 
     plugin.reverse_engineer = FakeReverse()
     monkeypatch.setattr(plugin, "_frozen_logits", frozen_logits)
