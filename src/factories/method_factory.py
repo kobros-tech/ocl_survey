@@ -182,7 +182,7 @@ def create_strategy(
                     strategy_kwargs.get("max_safety_candidates", 5)
                 ),
                 "class_train_epochs": int(
-                    strategy_kwargs.get("class_train_epochs", 1)
+                    strategy_kwargs.get("class_train_epochs", 5)
                 ),
                 "class_train_batch_size": int(
                     strategy_kwargs.get("class_train_batch_size", 64)
@@ -201,16 +201,16 @@ def create_strategy(
 
                 # Independent ML evaluator.
                 "eval_memory_per_class": int(
-                    strategy_kwargs.get("eval_memory_per_class", 20)
+                    strategy_kwargs.get("eval_memory_per_class", 100)
                 ),
                 "eval_memory_seed": int(
                     strategy_kwargs.get("eval_memory_seed", 0)
                 ),
                 "train_epochs": int(
-                    strategy_kwargs.get("train_epochs", 10)
+                    strategy_kwargs.get("train_epochs", 100)
                 ),
                 "eval_epochs": int(
-                    strategy_kwargs.get("eval_epochs", 50)
+                    strategy_kwargs.get("eval_epochs", 100)
                 ),
                 "eval_batch_size": int(
                     strategy_kwargs.get("eval_batch_size", 64)
