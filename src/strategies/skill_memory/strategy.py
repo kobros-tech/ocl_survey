@@ -77,7 +77,7 @@ class SkillMemoryStrategy(SupervisedTemplate):
         skill_eval_batch_size: int = 64,
         eval_memory_per_class: int = 20,
         eval_memory_seed: int = 0,
-        eval_epochs: int = 1,
+        eval_epochs: int = 10,
         eval_batch_size: int = 64,
         eval_learning_rate: float = 0.01,
         evaluator_model_factory: Callable[[], nn.Module],

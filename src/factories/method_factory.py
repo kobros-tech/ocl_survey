@@ -195,7 +195,9 @@ def create_strategy(
                 ),
 
                 # Direct Skill Memory evaluation is disabled.
-                "skill_eval_routing": "none",
+                "skill_eval_routing": strategy_kwargs.get(
+                    "eval_routing", "none"
+                ),
 
                 # Independent ML evaluator.
                 "eval_memory_per_class": int(
@@ -205,7 +207,7 @@ def create_strategy(
                     strategy_kwargs.get("eval_memory_seed", 0)
                 ),
                 "eval_epochs": int(
-                    strategy_kwargs.get("eval_epochs", 1)
+                    strategy_kwargs.get("eval_epochs", 100)
                 ),
                 "eval_batch_size": int(
                     strategy_kwargs.get("eval_batch_size", 64)
