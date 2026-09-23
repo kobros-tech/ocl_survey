@@ -18,6 +18,6 @@ forgetting_margin: 0.05
 score_floor: 0.9
 eval_routing: none
 train_epochs: 1
-class_train_epochs: 5
+class_train_epochs: 20
 eval_epochs: 100
 eval_memory_per_class: 100

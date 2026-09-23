@@ -182,7 +182,7 @@ def create_strategy(
                     strategy_kwargs.get("max_safety_candidates", 5)
                 ),
                 "class_train_epochs": int(
-                    strategy_kwargs.get("class_train_epochs", 5)
+                    strategy_kwargs.get("class_train_epochs", 20)
                 ),
                 "class_train_batch_size": int(
                     strategy_kwargs.get("class_train_batch_size", 64)
