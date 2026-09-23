@@ -31,10 +31,12 @@ class ClassBehaviorRecord:
 
     @property
     def reference_accuracy(self) -> float:
+        """Fraction of `reference_y` that matches `expected_y`."""
         result = compare_binary_behavior(self.reference_y, self.expected_y)
         return float(result["accuracy"])
 
     def state_dict(self) -> dict[str, Any]:
+        """Return a plain, CPU-tensor dict suitable for checkpointing."""
         return {
             "class_id": self.class_id,
             "skill_id": self.skill_id,
@@ -65,6 +67,7 @@ class ClassBehaviorRecord:
 
     @classmethod
     def from_state_dict(cls, state: dict[str, Any]) -> ClassBehaviorRecord:
+        """Reconstruct a record from `state_dict()`'s output."""
         return cls(
             class_id=int(state["class_id"]),
             skill_id=int(state["skill_id"]),
@@ -94,15 +97,23 @@ class BehaviorFingerprintCache:
     """
 
     def __init__(self) -> None:
+        """Create an empty cache with no skills or records."""
         self._records: dict[int, ClassBehaviorRecord] = {}
         self._skill_versions: dict[int, int] = {}
         self._skill_states: dict[int, dict[str, Tensor]] = {}
         self._skill_state_versions: dict[int, int] = {}
 
     def skill_version(self, skill_id: int) -> int:
+        """Return the current generation number for `skill_id` (0 if unseen)."""
         return self._skill_versions.get(int(skill_id), 0)
 
     def bump_skill(self, skill_id: int) -> int:
+        """Start a new generation for `skill_id` and return its version.
+
+        Invalidates every record currently attached to this skill and
+        drops its cached frozen state - the next `put`/`put_skill_state`
+        call establishes the new generation's snapshot.
+        """
         skill_id = int(skill_id)
         version = self.skill_version(skill_id) + 1
         self._skill_versions[skill_id] = version
@@ -112,6 +123,7 @@ class BehaviorFingerprintCache:
         return version
 
     def invalidate_skill(self, skill_id: int) -> None:
+        """Mark every currently stored record for `skill_id` as stale."""
         skill_id = int(skill_id)
         for record in self._records.values():
             if record.skill_id == skill_id:
@@ -120,6 +132,11 @@ class BehaviorFingerprintCache:
     def put_skill_state(
         self, skill_id: int, version: int, state_dict: dict[str, Tensor]
     ) -> None:
+        """Cache `skill_id`'s frozen weights for generation `version`.
+
+        Stores a detached CPU copy, so later training on the live model
+        never mutates this snapshot.
+        """
         skill_id = int(skill_id)
         version = int(version)
         self._skill_states[skill_id] = {
@@ -128,6 +145,11 @@ class BehaviorFingerprintCache:
         self._skill_state_versions[skill_id] = version
 
     def skill_state(self, skill_id: int, version: int) -> dict[str, Tensor] | None:
+        """Return a fresh copy of `skill_id`'s cached weights for `version`.
+
+        `None` if nothing is cached, or if the cached generation doesn't
+        match `version` (i.e. it's stale).
+        """
         skill_id = int(skill_id)
         version = int(version)
         if self._skill_state_versions.get(skill_id) != version:
@@ -138,12 +160,18 @@ class BehaviorFingerprintCache:
         return {key: value.clone() for key, value in state.items()}
 
     def put(self, record: ClassBehaviorRecord) -> None:
+        """Store `record`, keyed by its `class_id`."""
         self._records[record.class_id] = record
         self._skill_versions[record.skill_id] = max(
             self.skill_version(record.skill_id), record.version
         )
 
     def get(self, class_id: int, skill_id: int) -> ClassBehaviorRecord | None:
+        """Return the record for `class_id` if it's valid and current for `skill_id`.
+
+        `None` if the class is unknown, was invalidated, belongs to a
+        different skill, or was recorded for an older generation.
+        """
         record = self._records.get(int(class_id))
         if record is None or not record.valid:
             return None
@@ -154,6 +182,7 @@ class BehaviorFingerprintCache:
         return record
 
     def records_for_skill(self, skill_id: int) -> list[ClassBehaviorRecord]:
+        """Return every currently valid, current-generation record for `skill_id`."""
         return [
             record
             for record in self._records.values()
@@ -161,12 +190,14 @@ class BehaviorFingerprintCache:
         ]
 
     def all_records_for_skill(self, skill_id: int) -> list[ClassBehaviorRecord]:
+        """Return every record ever stored for `skill_id`, including stale ones."""
         skill_id = int(skill_id)
         return [
             record for record in self._records.values() if record.skill_id == skill_id
         ]
 
     def state_dict(self) -> dict[str, Any]:
+        """Return a plain, checkpointable dict of the entire cache."""
         return {
             "skill_versions": dict(self._skill_versions),
             "skill_states": {
@@ -180,6 +211,7 @@ class BehaviorFingerprintCache:
         }
 
     def load_state_dict(self, state: dict[str, Any]) -> None:
+        """Replace the cache's contents with a previously saved `state_dict()`."""
         self._skill_versions = {
             int(key): int(value)
             for key, value in state.get("skill_versions", {}).items()

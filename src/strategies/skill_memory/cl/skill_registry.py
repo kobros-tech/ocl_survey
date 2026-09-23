@@ -29,6 +29,10 @@ class SkillMemory:
         self._metadata: dict[int, dict] = {}
 
     def allocate(self) -> int:
+        """Reserve and return the lowest free slot index.
+
+        Raises `RuntimeError` once every slot up to `max_skills` is in use.
+        """
         for slot in range(self.max_skills):
             if slot not in self._states:
                 return slot
@@ -40,6 +44,12 @@ class SkillMemory:
         state_dict: Mapping[str, Tensor],
         metadata: dict | None = None,
     ) -> None:
+        """Overwrite `slot` with a detached CPU copy of `state_dict`.
+
+        Copying (rather than keeping a live reference) is what makes a
+        stored skill an immutable snapshot: later changes to the model that
+        produced `state_dict` never leak into what's stored here.
+        """
         if not 0 <= slot < self.max_skills:
             raise ValueError(f"invalid skill slot {slot}")
         self._states[slot] = {
@@ -48,12 +58,15 @@ class SkillMemory:
         self._metadata[slot] = dict(metadata or {})
 
     def state(self, slot: int) -> dict[str, Tensor]:
+        """Return the stored `state_dict` for `slot` (raises `KeyError` if empty)."""
         return self._states[slot]
 
     def metadata(self, slot: int) -> dict:
+        """Return a copy of the metadata dict passed to `store` for `slot`."""
         return dict(self._metadata.get(slot, {}))
 
     def slots(self) -> set[int]:
+        """Return the set of currently occupied slot indices."""
         return set(self._states)
 
     def __len__(self) -> int:
@@ -88,6 +101,12 @@ class ExperienceClassMap:
         self._by_skill: dict[int, set[int]] = {}
 
     def record(self, record: ClassRecord) -> None:
+        """Register one class's outcome for one experience.
+
+        Raises `RuntimeError` if this class was already mapped to a
+        *different* skill, either globally (the class-to-skill invariant
+        this class exists to enforce) or within the same experience.
+        """
         previous = self._class_to_skill.get(record.class_id)
         if previous is not None and previous != record.skill:
             raise RuntimeError(
@@ -109,16 +128,25 @@ class ExperienceClassMap:
         self._by_skill.setdefault(record.skill, set()).add(record.class_id)
 
     def classes_for_experience(self, experience_index: int) -> dict[int, ClassRecord]:
+        """Return `{class_id: ClassRecord}` for every class seen in this experience."""
         return dict(self._by_experience.get(experience_index, {}))
 
     def skill_for_class(self, experience_index: int, class_id: int) -> int | None:
+        """Return the skill assigned to `class_id` within `experience_index`.
+
+        `None` if that (experience, class) pair was never recorded. Unlike
+        `find_skill_for_class_anywhere`, this does not search other
+        experiences.
+        """
         record = self._by_experience.get(experience_index, {}).get(class_id)
         return record.skill if record else None
 
     def find_skill_for_class_anywhere(self, class_id: int) -> int | None:
+        """Return the canonical skill for `class_id`, searching all experiences."""
         return self._class_to_skill.get(class_id)
 
     def classes_for_skill(self, skill: int) -> set[int]:
+        """Return every class currently mapped to `skill`."""
         return set(self._by_skill.get(skill, set()))
 
     def skills_for_experience(

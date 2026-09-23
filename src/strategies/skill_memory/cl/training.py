@@ -5,7 +5,7 @@ from __future__ import annotations
 import torch
 from torch.utils.data import DataLoader
 
-from .probing import class_subset
+from ..utils.probing import class_subset
 
 
 def train_on_class(

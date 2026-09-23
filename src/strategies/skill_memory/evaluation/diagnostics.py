@@ -8,7 +8,7 @@ from typing import Any
 
 from torch import Tensor, nn
 
-from .probing import incremental_active_units, incremental_out_features
+from ..utils.probing import incremental_active_units, incremental_out_features
 
 
 def routing_rank_diagnostics(routes: list[dict[str, Any]]) -> dict[str, Any]:

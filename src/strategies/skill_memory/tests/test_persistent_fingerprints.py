@@ -5,7 +5,7 @@ from types import SimpleNamespace
 import torch
 
 from skill_memory import ClassBehaviorRecord, SkillMemory
-from skill_memory.persistent_skill_memory_plugin import (
+from skill_memory.cl.persistent_skill_memory_plugin import (
     PersistentFingerprintSkillMemoryPlugin,
 )
 
@@ -48,10 +48,11 @@ def test_listwise_route_identifies_complete_candidate_set(monkeypatch):
 
     class FakeReverse:
         model = object()
+        training_mode = "listwise"
 
         @staticmethod
-        def predict_scores_features(features):
-            return features[:, 6]
+        def predict_scores_candidate_sets(features):
+            return features[:, :, 6]
 
     plugin.reverse_engineer = FakeReverse()
     monkeypatch.setattr(plugin, "_frozen_logits", frozen_logits)
@@ -91,10 +92,11 @@ def test_route_keeps_skill_id_distinct_from_slot_position(monkeypatch):
 
     class FakeReverse:
         model = object()
+        training_mode = "listwise"
 
         @staticmethod
-        def predict_scores_features(features):
-            return features[:, 6]
+        def predict_scores_candidate_sets(features):
+            return features[:, :, 6]
 
     plugin.reverse_engineer = FakeReverse()
     monkeypatch.setattr(plugin, "_frozen_logits", frozen_logits)

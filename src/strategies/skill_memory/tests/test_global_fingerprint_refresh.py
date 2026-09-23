@@ -1,17 +1,8 @@
-import importlib.util
-from pathlib import Path
 from types import SimpleNamespace
 
 import torch
 
-ROOT = Path(__file__).parents[1]
-SPEC = importlib.util.spec_from_file_location(
-    "global_fingerprint_refresh",
-    ROOT / "global_fingerprint_refresh.py",
-)
-MODULE = importlib.util.module_from_spec(SPEC)
-assert SPEC.loader is not None
-SPEC.loader.exec_module(MODULE)
+from skill_memory.evaluation import global_fingerprint_refresh as MODULE
 
 
 def _record(class_id, skill_id, value):

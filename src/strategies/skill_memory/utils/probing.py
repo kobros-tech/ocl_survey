@@ -19,6 +19,7 @@ from torch.utils.data import DataLoader, Subset
 
 
 def origin_experience(experience):
+    """Return the experience's underlying original object, if wrapped."""
     return getattr(experience, "origin_experience", experience)
 
 
@@ -54,6 +55,10 @@ def classes_in_experience(experience) -> list[int]:
 
 
 def class_indices(experience, target_class: int) -> list[int]:
+    """Return dataset indices for `target_class` within `experience`.
+
+    Raises `RuntimeError` if that class has no samples in this experience.
+    """
     indices = _class_index_map(experience).get(int(target_class))
     if not indices:
         raise RuntimeError(f"class {target_class} has no samples in this experience")
@@ -99,6 +104,7 @@ def probe_class(
     n_batches: int,
     seed=None,
 ):
+    """Sample up to `n_batches` batches of only `target_class`'s own data."""
     return _sample_batches(
         class_subset(experience, target_class), batch_size, n_batches, seed
     )
@@ -110,6 +116,7 @@ def probe_whole_experience(experience, batch_size: int, n_batches: int, seed=Non
 
 
 def score_from_loss(loss_value: float) -> float:
+    """Map a loss to a monotonically decreasing score in `(0, 1]` via `exp(-loss)`."""
     return float(np.exp(-loss_value))
 
 
@@ -141,6 +148,11 @@ def resize_incremental_classifiers_for_state(
 def incremental_out_features(
     model: nn.Module, state_dict: Mapping[str, Tensor]
 ) -> int | None:
+    """Return the stored classifier's output width, or `None` if not found.
+
+    Reads the width directly from `state_dict`'s classifier weight shape -
+    no forward pass needed.
+    """
     for module_name, module in model.named_modules():
         if not isinstance(module, IncrementalClassifier):
             continue
@@ -168,6 +180,13 @@ def incremental_active_units(
 def restore_initial_state(
     model: nn.Module, initial_state: Mapping[str, Tensor]
 ) -> None:
+    """Reset `model` in place to `initial_state`, tolerating a grown classifier head.
+
+    Used to roll a model back to its pre-training weights (e.g. before a
+    SCRATCH decision). A classifier weight/bias that's since grown wider is
+    only restored for the rows it had initially; `active_units` is left
+    alone since it reflects classes the model has genuinely seen.
+    """
     current = model.state_dict()
     for name, initial in initial_state.items():
         if name not in current:
@@ -202,6 +221,12 @@ def apply_skill_state(
 
 
 def apply_skill_state_exact(model: nn.Module, state_dict: Mapping[str, Tensor]) -> None:
+    """Load a skill's exact stored weights, without any experience adaptation.
+
+    Unlike `apply_skill_state`, this never grows the classifier further for
+    a *current* experience - it's for evaluating a skill's frozen snapshot
+    exactly as stored (e.g. reverse-router scoring).
+    """
     resize_incremental_classifiers_for_state(model, state_dict)
     model.load_state_dict(state_dict, strict=False)
 
@@ -225,6 +250,11 @@ def evaluate_state(
 
 
 def predict_logits(model, state_dict: Mapping[str, Tensor], x: Tensor) -> Tensor:
+    """Load `state_dict` into `model` and return its forward-pass logits for `x`.
+
+    No gradient tracking; `model` is mutated in place (load the caller's own
+    deep copy first if the live model must stay untouched).
+    """
     apply_skill_state_exact(model, state_dict)
     model.eval()
     device = next(model.parameters()).device
@@ -238,19 +268,59 @@ def expand_skill_logits(
     skill_classes: set[int],
     output_dim: int,
 ) -> Tensor:
-    """Pad global classifier logits without remapping class columns."""
-    del state_dict, skill_classes
+    """Place a skill's logits in the global class space.
+
+    Stored skills can have either a global Avalanche classifier head or a
+    compact head containing exactly their owned classes. Global heads already
+    use class ids as column indices; compact heads must map row i to the
+    i-th owned global class. A one-class skill is therefore mapped to its
+    actual class instead of incorrectly being treated as class 0.
+    """
+    del state_dict
+    owned = sorted(int(class_id) for class_id in skill_classes)
+    if not owned:
+        return logits.new_full((logits.shape[0], output_dim), -1e4)
+
+    width = logits.shape[-1]
+    max_owned = max(owned)
+
+    if width > len(owned):
+        if max_owned >= width:
+            raise RuntimeError(
+                f"skill owns class {max_owned}, but its classifier has only "
+                f"{width} output columns"
+            )
+        result = logits.new_full((logits.shape[0], output_dim), -1e4)
+        copy_width = min(width, output_dim)
+        result[:, :copy_width] = logits[:, :copy_width]
+        return result
+
+    if width != len(owned):
+        raise RuntimeError(
+            f"skill owns {len(owned)} classes but its compact classifier has "
+            f"{width} output columns"
+        )
+
+    if max_owned >= output_dim:
+        raise RuntimeError(
+            f"skill owns class {max_owned}, outside global output dimension "
+            f"{output_dim}"
+        )
+
     result = logits.new_full((logits.shape[0], output_dim), -1e4)
-    width = min(logits.shape[1], output_dim)
-    result[:, :width] = logits[:, :width]
+    for local_index, global_class in enumerate(owned):
+        result[:, global_class] = logits[:, local_index]
     return result
 
 
-# Compatibility re-exports only. The implementations live in evaluation.py;
-# probing itself contains no routing/decision logic. The `as`-aliases below
-# are required so linters treat these as intentional re-exports rather than
-# unused imports; removing them silently breaks `skill_memory_plugin.py`'s
-# `from .probing import find_best_routing_skill`.
-from .evaluation import RoutingResult as RoutingResult  # noqa: E402
-from .evaluation import find_best_routing_skill as find_best_routing_skill  # noqa: E402
-from .evaluation import route_probe_logits as route_probe_logits  # noqa: E402
+# Compatibility re-exports only. The implementations live in evaluation/
+# routing.py; probing itself contains no routing/decision logic. The
+# `as`-aliases below are required so linters treat these as intentional
+# re-exports rather than unused imports; removing them silently breaks
+# `skill_memory_plugin.py`'s `from ..evaluation.routing import
+# find_best_routing_skill` compatibility path.
+from ..evaluation.routing import RoutingResult as RoutingResult  # noqa: E402
+from ..evaluation.routing import (  # noqa: E402
+    find_best_routing_skill as find_best_routing_skill,
+)
+from ..evaluation.routing import route_probe_logits as route_probe_logits  # noqa: E402

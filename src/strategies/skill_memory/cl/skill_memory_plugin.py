@@ -28,8 +28,7 @@ import torch
 from avalanche.training.plugins.strategy_plugin import SupervisedPlugin
 from torch import Tensor
 
-from .decision import decide_class
-from .probing import (
+from ..utils.probing import (
     apply_skill_state_exact,
     classes_in_experience,
     expand_skill_logits,
@@ -39,6 +38,7 @@ from .probing import (
     prepare_for_experience,
     restore_initial_state,
 )
+from .decision import decide_class
 from .skill_registry import ClassRecord, ExperienceClassMap, SkillMemory
 from .training import train_on_class
 
@@ -71,6 +71,13 @@ class SkillMemoryPlugin(SupervisedPlugin):
         eval_routing: EvalRouting = "probe",
         verbose: bool = True,
     ):
+        """Configure per-class REUSE/SCRATCH decisions and evaluation routing.
+
+        `memory` stores each skill's frozen weight snapshot; a fresh one is
+        created if not given. `eval_routing` controls how a class is
+        identified at evaluation time; see the module docstring's
+        `EvalRouting` values.
+        """
         super().__init__()
         if force_decision not in (None, self.REUSE, self.SCRATCH):
             raise ValueError("invalid force_decision")
@@ -164,6 +171,12 @@ class SkillMemoryPlugin(SupervisedPlugin):
     # ------------------------------------------------------------------
 
     def before_training_exp(self, strategy, **kwargs) -> None:
+        """Decide REUSE/SCRATCH and train each class in this experience.
+
+        Avalanche experiences may be split into sub-experiences; this hook
+        tracks logical experience boundaries so every sub-experience's
+        classes get processed, not just the first.
+        """
         experience = strategy.experience
         first_subexp = self._is_first_subexp(experience)
 
@@ -313,6 +326,11 @@ class SkillMemoryPlugin(SupervisedPlugin):
             )
 
     def after_training_exp(self, strategy, **kwargs) -> None:
+        """Log the class->skill assignments for this experience and close it out.
+
+        No-op until the last sub-experience of a logical experience has
+        finished (see `before_training_exp`).
+        """
         experience = strategy.experience
         if not self._is_last_subexp(experience):
             return
@@ -353,12 +371,14 @@ class SkillMemoryPlugin(SupervisedPlugin):
     # ------------------------------------------------------------------
 
     def before_eval(self, strategy, **kwargs) -> None:
+        """Snapshot the model and reset per-evaluation-phase bookkeeping."""
         self._pre_eval_state = self._snapshot(strategy.model)
         self._eval_active = True
         self._probe_correct_margins = []
         self._probe_wrong_margins = []
 
     def before_eval_exp(self, strategy, **kwargs) -> None:
+        """Route this evaluation experience's classes per `self.eval_routing`."""
         if not self._eval_active or self.eval_routing == "none":
             return
 
@@ -454,6 +474,7 @@ class SkillMemoryPlugin(SupervisedPlugin):
         ]
 
     def after_eval(self, strategy, **kwargs) -> None:
+        """Log probe-margin diagnostics and restore the model to its pre-eval state."""
         if not self._eval_active:
             return
         try:

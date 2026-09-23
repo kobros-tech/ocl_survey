@@ -12,7 +12,7 @@ import avalanche.logging as logging
 import src.toolkit.utils as utils
 from avalanche.evaluation.metrics import (StreamTime, accuracy_metrics,
                                           loss_metrics)
-from avalanche.models import SCRModel
+from avalanche.models import SCRModel, SimpleMLP
 from avalanche.training.plugins import (EarlyStoppingPlugin, MIRPlugin,
                                         RARPlugin, ReplayPlugin,
                                         SupervisedPlugin)
@@ -24,8 +24,7 @@ from avalanche.training.supervised.mer import MER
 from src.factories.benchmark_factory import DS_CLASSES, DS_SIZES
 from src.strategies import (ER_ACE, AGEMPlugin, LwFPlugin, OnlineICaRL,
                             OnlineICaRLLossPlugin, 
-                            PersistentFingerprintSkillMemoryPlugin as SkillMemoryPlugin,
-                            SkillMemory, )
+                            SkillMemoryStrategy)
 from src.toolkit.cumulative_accuracies import CumulativeAccuracyPluginMetric
 from src.toolkit.json_logger import JSONLogger
 from src.toolkit.lambda_scheduler import LambdaScheduler
@@ -49,6 +48,7 @@ def create_strategy(
     evaluation_kwargs=None,
     strategy_kwargs=None,
 ):
+    parallel_eval_plugin = None
     strategy_dict = {
         "model": model,
         "optimizer": optimizer,
@@ -154,36 +154,96 @@ def create_strategy(
         strategy_dict.update(utils.extract_kwargs(["mem_size"], strategy_kwargs))
 
     elif name == "skill_memory":
-        strategy = "Naive"
-        skill_memory = SkillMemory(max_skills=int(strategy_kwargs.get("max_skills", 200)))
-        skill_plugin = SkillMemoryPlugin(
-            memory=skill_memory,
-            max_skills=int(strategy_kwargs.get("max_skills", 200)),
-            forgetting_margin=float(
-                strategy_kwargs.get("forgetting_margin", 0.05)
-            ),
-            score_floor=strategy_kwargs.get("score_floor", 0.9),
-            probe_batch_size=int(
-                strategy_kwargs.get("probe_batch_size", 64)
-            ),
-            probe_batches=int(
-                strategy_kwargs.get("probe_batches", 5)
-            ),
-            probe_seed=strategy_kwargs.get("probe_seed", None),
-            class_train_epochs=int(
-                strategy_kwargs.get("class_train_epochs", 1)
-            ),
-            class_train_batch_size=int(
-                strategy_kwargs.get("class_train_batch_size", 64)
-            ),
-            reuse_is_mutable=bool(
-                strategy_kwargs.get("reuse_is_mutable", True)
-            ),
-            force_decision=strategy_kwargs.get("force_decision", None),
-            eval_routing=strategy_kwargs.get("eval_routing", "probe"),
-            verbose=bool(strategy_kwargs.get("verbose", True)),
+        strategy = SkillMemoryStrategy
+
+        strategy_dict["criterion"] = nn.CrossEntropyLoss()
+
+        strategy_dict.update(
+            {
+                "max_skills": int(
+                    strategy_kwargs.get("max_skills", 200)
+                ),
+                "forgetting_margin": float(
+                    strategy_kwargs.get("forgetting_margin", 0.05)
+                ),
+                "score_floor": strategy_kwargs.get(
+                    "score_floor", 0.9
+                ),
+                "probe_batch_size": int(
+                    strategy_kwargs.get("probe_batch_size", 64)
+                ),
+                "probe_batches": int(
+                    strategy_kwargs.get("probe_batches", 5)
+                ),
+                "probe_seed": strategy_kwargs.get(
+                    "probe_seed", None
+                ),
+                "max_safety_candidates": int(
+                    strategy_kwargs.get("max_safety_candidates", 5)
+                ),
+                "class_train_epochs": int(
+                    strategy_kwargs.get("class_train_epochs", 1)
+                ),
+                "class_train_batch_size": int(
+                    strategy_kwargs.get("class_train_batch_size", 64)
+                ),
+                "reuse_is_mutable": bool(
+                    strategy_kwargs.get("reuse_is_mutable", True)
+                ),
+                "force_decision": strategy_kwargs.get(
+                    "force_decision", None
+                ),
+
+                # Direct Skill Memory evaluation is disabled.
+                "skill_eval_routing": "none",
+
+                # Independent ML evaluator.
+                "eval_memory_per_class": int(
+                    strategy_kwargs.get("eval_memory_per_class", 20)
+                ),
+                "eval_memory_seed": int(
+                    strategy_kwargs.get("eval_memory_seed", 0)
+                ),
+                "eval_epochs": int(
+                    strategy_kwargs.get("eval_epochs", 1)
+                ),
+                "eval_batch_size": int(
+                    strategy_kwargs.get("eval_batch_size", 64)
+                ),
+                "eval_learning_rate": float(
+                    strategy_kwargs.get("eval_learning_rate", 0.01)
+                ),
+                "evaluator_model_factory": lambda: SimpleMLP(
+                    num_classes=DS_CLASSES[dataset_name],
+                    input_size=(
+                        DS_SIZES[dataset_name][0]
+                        * DS_SIZES[dataset_name][1]
+                        * DS_SIZES[dataset_name][2]
+                    ),
+                    hidden_size=512,
+                    hidden_layers=1,
+                    drop_rate=0.5,
+                ),
+            }
         )
-        plugins.append(skill_plugin)
+
+        # Keep OCL Survey's normal evaluator and loggers for experiment
+        # reporting. The independent ML evaluator inside SkillMemoryStrategy
+        # remains responsible for producing the predictions that are measured.
+        evaluator, parallel_eval_plugin = create_evaluator(
+            logdir=logdir,
+            **evaluation_kwargs,
+        )
+        strategy_dict["evaluator"] = evaluator
+
+        if parallel_eval_plugin is not None:
+            strategy_dict["eval_every"] = -1
+            plugins.append(parallel_eval_plugin)
+
+        return strategy(
+            **strategy_dict,
+            plugins=plugins,
+        )
 
     elif name == "linear_probing":
         strategy = "Cumulative"
@@ -196,22 +256,74 @@ def create_strategy(
         strategy_dict.update({"evaluator": evaluator})
         plugins.append(SKLearnProbingPlugin(logdir, prefix="model"))
 
-    if name == "er_with_review":
-        strategy = "Naive"
-        specific_args = utils.extract_kwargs(["mem_size", "batch_size_mem"], strategy_kwargs)
-        storage_policy = ClassBalancedBuffer(max_size=specific_args["mem_size"], adaptive_size=True)
-        plugins.append(ReplayPlugin(**specific_args, storage_policy=storage_policy))
-        plugins.append(ReviewTrickPlugin(storage_policy=storage_policy, num_epochs=5))
+        if name == "er_with_review":
+            strategy = "Naive"
+            specific_args = utils.extract_kwargs(
+                ["mem_size", "batch_size_mem"],
+                strategy_kwargs,
+            )
+            storage_policy = ClassBalancedBuffer(
+                max_size=specific_args["mem_size"],
+                adaptive_size=True,
+            )
+            plugins.append(
+                ReplayPlugin(
+                    **specific_args,
+                    storage_policy=storage_policy,
+                )
+            )
+            plugins.append(
+                ReviewTrickPlugin(
+                    storage_policy=storage_policy,
+                    num_epochs=5,
+                )
+            )
 
-    if strategy_dict["evaluator"] is None:
-        evaluator, parallel_eval_plugin = create_evaluator(logdir=logdir, **evaluation_kwargs)
-        strategy_dict.update({"evaluator": evaluator})
+        if strategy is not SkillMemoryStrategy:
+            if strategy_dict["evaluator"] is None:
+                evaluator, parallel_eval_plugin = create_evaluator(
+                    logdir=logdir,
+                    **evaluation_kwargs,
+                )
+                strategy_dict.update(
+                    {"evaluator": evaluator}
+                )
+
+            if parallel_eval_plugin is not None:
+                strategy_dict["eval_every"] = -1
+                plugins.append(parallel_eval_plugin)
+
+            return globals()[strategy](
+                **strategy_dict,
+                plugins=plugins,
+            )
+
+    if strategy is not SkillMemoryStrategy:
+        if strategy_dict["evaluator"] is None:
+            evaluator, parallel_eval_plugin = create_evaluator(
+                logdir=logdir,
+                **evaluation_kwargs
+            )
+            strategy_dict.update({"evaluator": evaluator})
+
+        if parallel_eval_plugin is not None:
+            strategy_dict["eval_every"] = -1
+            plugins.append(parallel_eval_plugin)
 
     if parallel_eval_plugin is not None:
         strategy_dict["eval_every"] = -1
         plugins.append(parallel_eval_plugin)
 
-    return globals()[strategy](**strategy_dict, plugins=plugins)
+    if strategy is SkillMemoryStrategy:
+        return strategy(
+            **strategy_dict,
+            plugins=plugins,
+        )
+
+    return globals()[strategy](
+        **strategy_dict,
+        plugins=plugins,
+    )
 
 
 def get_loggers(loggers_list, logdir, prefix="logs"):

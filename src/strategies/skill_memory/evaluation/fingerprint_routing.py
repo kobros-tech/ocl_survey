@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
-from .diagnostics import class_index_alignment_report, routing_rank_diagnostics
-from .persistent_skill_memory_plugin import (
+from ..cl.persistent_skill_memory_plugin import (
     PersistentFingerprintSkillMemoryPlugin as _BaseFingerprintPlugin,
 )
+from .diagnostics import class_index_alignment_report, routing_rank_diagnostics
 
 
 class PersistentFingerprintSkillMemoryPlugin(_BaseFingerprintPlugin):
@@ -31,6 +31,7 @@ class PersistentFingerprintSkillMemoryPlugin(_BaseFingerprintPlugin):
         diagnose: bool = False,
         **kwargs,
     ) -> None:
+        """Wrap the base plugin, defaulting diagnostics off for routing speed."""
         self.diagnose = bool(diagnose)
         self.last_routing_diagnostics: dict = {}
         self.last_alignment_report: dict = {}
@@ -43,6 +44,7 @@ class PersistentFingerprintSkillMemoryPlugin(_BaseFingerprintPlugin):
         )
 
     def after_training_exp(self, strategy, **kwargs) -> None:
+        """Fit the router, then refresh `last_alignment_report` if diagnosing."""
         super().after_training_exp(strategy, **kwargs)
         if not self.diagnose:
             self.last_alignment_report = {}
@@ -61,6 +63,7 @@ class PersistentFingerprintSkillMemoryPlugin(_BaseFingerprintPlugin):
         )
 
     def after_eval_forward(self, strategy, **kwargs) -> None:
+        """Route as usual, then refresh or discard `last_routing_diagnostics`."""
         super().after_eval_forward(strategy, **kwargs)
         if self.diagnose:
             self.last_routing_diagnostics = routing_rank_diagnostics(

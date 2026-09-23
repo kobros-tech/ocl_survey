@@ -14,43 +14,7 @@ label-indexing path, with a fake dataset that counts how many times
 `__getitem__` is called.
 """
 
-import importlib.util
-import sys
-import types
-from pathlib import Path
-
-# Lightweight Avalanche stubs, same pattern as the other tests in this
-# directory.
-avalanche = types.ModuleType("avalanche")
-models = types.ModuleType("avalanche.models")
-dynamic = types.ModuleType("avalanche.models.dynamic_modules")
-
-
-class IncrementalClassifier:  # pragma: no cover - only used for isinstance
-    pass
-
-
-dynamic.IncrementalClassifier = IncrementalClassifier
-dynamic.avalanche_model_adaptation = lambda model, experience: None
-models.dynamic_modules = dynamic
-avalanche.models = models
-sys.modules.update(
-    {
-        "avalanche": avalanche,
-        "avalanche.models": models,
-        "avalanche.models.dynamic_modules": dynamic,
-    }
-)
-
-root = Path(__file__).parents[1]
-pkg = types.ModuleType("cachepkg")
-pkg.__path__ = [str(root)]
-sys.modules["cachepkg"] = pkg
-path = root / "probing.py"
-spec = importlib.util.spec_from_file_location("cachepkg.probing", path)
-mod = importlib.util.module_from_spec(spec)
-sys.modules[spec.name] = mod
-spec.loader.exec_module(mod)
+from skill_memory.utils import probing as mod
 
 
 class CountingDataset:

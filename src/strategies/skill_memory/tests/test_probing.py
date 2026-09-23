@@ -1,44 +1,7 @@
-import importlib.util
-import sys
-import types
-from pathlib import Path
-
 import torch
 from torch.utils.data import Dataset
 
-# Lightweight Avalanche stubs.
-avalanche = types.ModuleType("avalanche")
-models = types.ModuleType("avalanche.models")
-dynamic = types.ModuleType("avalanche.models.dynamic_modules")
-
-
-class IncrementalClassifier:
-    pass
-
-
-dynamic.IncrementalClassifier = IncrementalClassifier
-dynamic.avalanche_model_adaptation = lambda model, experience: None
-models.dynamic_modules = dynamic
-avalanche.models = models
-sys.modules.update(
-    {
-        "avalanche": avalanche,
-        "avalanche.models": models,
-        "avalanche.models.dynamic_modules": dynamic,
-    }
-)
-
-
-root = Path(__file__).parents[1]
-pkg = types.ModuleType("probepkg")
-pkg.__path__ = [str(root)]
-sys.modules["probepkg"] = pkg
-
-path = root / "probing.py"
-spec = importlib.util.spec_from_file_location("probepkg.probing", path)
-mod = importlib.util.module_from_spec(spec)
-sys.modules[spec.name] = mod
-spec.loader.exec_module(mod)
+from skill_memory.utils import probing as mod
 
 
 class TinyDataset(Dataset):

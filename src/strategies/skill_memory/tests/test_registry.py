@@ -1,19 +1,6 @@
-import importlib.util
-import sys
-from pathlib import Path
-
 import torch
 
-# Load skill_registry without importing the package __init__, which imports Avalanche.
-path = Path(__file__).parents[1] / "skill_registry.py"
-spec = importlib.util.spec_from_file_location("skill_registry_under_test", path)
-module = importlib.util.module_from_spec(spec)
-sys.modules[spec.name] = module
-spec.loader.exec_module(module)
-
-ClassRecord = module.ClassRecord
-ExperienceClassMap = module.ExperienceClassMap
-SkillMemory = module.SkillMemory
+from skill_memory.cl.skill_registry import ClassRecord, ExperienceClassMap, SkillMemory
 
 
 def test_experience_groups_multiple_skills_and_classes():

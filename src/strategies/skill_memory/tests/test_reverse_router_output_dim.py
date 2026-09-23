@@ -17,7 +17,7 @@ from types import SimpleNamespace
 import torch
 
 from skill_memory import ClassBehaviorRecord, SkillMemory
-from skill_memory.persistent_skill_memory_plugin import (
+from skill_memory.evaluation.fingerprint_routing import (
     PersistentFingerprintSkillMemoryPlugin,
 )
 

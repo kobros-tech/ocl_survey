@@ -3,11 +3,7 @@ from .icarl import OnlineICaRL, OnlineICaRLLossPlugin
 from .erace import ER_ACE
 from .lwf import LwFPlugin
 from .agem import AGEMPlugin
-from .skill_memory import (
-    SkillMemory, 
-    SkillMemoryPlugin, 
-    PersistentFingerprintSkillMemoryPlugin
-)
+from .skill_memory import SkillMemoryStrategy
 
 __all__ = [
     "OnlineICaRL",
@@ -15,7 +11,5 @@ __all__ = [
     "ER_ACE",
     "LwFPlugin",
     "AGEMPlugin",
-    "SkillMemory",
-    "SkillMemoryPlugin",
-    "PersistentFingerprintSkillMemoryPlugin",
+    "SkillMemoryStrategy",
 ]
