@@ -206,8 +206,11 @@ def create_strategy(
                 "eval_memory_seed": int(
                     strategy_kwargs.get("eval_memory_seed", 0)
                 ),
+                "train_epochs": int(
+                    strategy_kwargs.get("train_epochs", 10)
+                ),
                 "eval_epochs": int(
-                    strategy_kwargs.get("eval_epochs", 100)
+                    strategy_kwargs.get("eval_epochs", 50)
                 ),
                 "eval_batch_size": int(
                     strategy_kwargs.get("eval_batch_size", 64)
