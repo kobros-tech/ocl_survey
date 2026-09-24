@@ -10,8 +10,68 @@ permissions:
   contents: read
 
 jobs:
+  # ==================================================================
+  # Download dataset once
+  # ==================================================================
+
+  download-dataset:
+    name: Download CIFAR-100 dataset
+    runs-on: ubuntu-latest
+
+    steps:
+      # ============================================================
+      # Setup
+      # ============================================================
+
+      - name: Check out pushed commit
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+
+      - name: Install pinned dependencies
+        run: python -m pip install -r requirements.txt
+
+      # ============================================================
+      # CIFAR-100
+      # ============================================================
+
+      - name: Download CIFAR-100 dataset
+        run: |
+          python - <<'PY'
+          from torchvision import datasets
+
+          datasets.CIFAR100(
+              root="data",
+              train=True,
+              download=True,
+          )
+
+          datasets.CIFAR100(
+              root="data",
+              train=False,
+              download=True,
+          )
+          PY
+
+      - name: Upload CIFAR-100 dataset
+        uses: actions/upload-artifact@v4
+        with:
+          name: cifar100-dataset
+          path: data
+          if-no-files-found: error
+          retention-days: 1
+
+
   benchmark:
     name: Seed ${{ matrix.seed }} — Skill Memory + ER
+    needs: download-dataset
     runs-on: ubuntu-latest
     timeout-minutes: 360
 
@@ -39,6 +99,12 @@ jobs:
 
       - name: Install pinned dependencies
         run: python -m pip install -r requirements.txt
+
+      - name: Download CIFAR-100 dataset artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: cifar100-dataset
+          path: data
 
       # ============================================================
       # Skill Memory
@@ -149,6 +215,7 @@ jobs:
           path: results/er_split_cifar100_20_2000/${{ matrix.seed }}
           if-no-files-found: error
           retention-days: 30
+
 
   # ==================================================================
   # Collect all seeds and create the two comparison ZIP files

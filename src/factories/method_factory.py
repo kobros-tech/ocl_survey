@@ -201,7 +201,7 @@ def create_strategy(
 
                 # Independent ML evaluator.
                 "eval_memory_per_class": int(
-                    strategy_kwargs.get("eval_memory_per_class", 100)
+                    strategy_kwargs.get("eval_memory_per_class", 20)
                 ),
                 "eval_memory_seed": int(
                     strategy_kwargs.get("eval_memory_seed", 0)
