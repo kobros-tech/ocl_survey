@@ -210,7 +210,7 @@ def create_strategy(
                     strategy_kwargs.get("train_epochs", 1)
                 ),
                 "eval_epochs": int(
-                    strategy_kwargs.get("eval_epochs", 100)
+                    strategy_kwargs.get("eval_epochs", 10)
                 ),
                 "eval_batch_size": int(
                     strategy_kwargs.get("eval_batch_size", 64)
@@ -226,8 +226,8 @@ def create_strategy(
                         * DS_SIZES[dataset_name][2]
                     ),
                     hidden_size=2048,
-                    hidden_layers=2,
-                    drop_rate=0.2,
+                    hidden_layers=1,
+                    drop_rate=0.1,
                 ),
             }
         )

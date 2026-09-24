@@ -134,9 +134,9 @@ def main() -> None:
         evaluator_model_factory=lambda: SimpleMLP(
             num_classes=10,
             input_size=28 * 28,
-            hidden_size=512,
+            hidden_size=2048,
             hidden_layers=1,
-            drop_rate=0.5,
+            drop_rate=0.1,
         ),
         eval_memory_per_class=args.eval_memory_per_class,
         eval_epochs=args.eval_epochs,
