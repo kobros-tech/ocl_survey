@@ -19,5 +19,5 @@ score_floor: 0.9
 eval_routing: none
 train_epochs: 1
 class_train_epochs: 1
-eval_epochs: 3
-eval_memory_per_class: 200
+eval_epochs: 10
+eval_memory_per_class: 100
