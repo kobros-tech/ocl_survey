@@ -4,3 +4,4 @@ jsonlines==4.0.0
 kornia==0.7.0
 ray[default]==2.8.1
 hyperopt
+skill-memory @ git+https://github.com/kobros-tech/cl_strategy.git@b79fcebaefdb0d10998ed1123e8df71614e364d3

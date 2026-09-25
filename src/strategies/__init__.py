@@ -3,7 +3,7 @@ from .icarl import OnlineICaRL, OnlineICaRLLossPlugin
 from .erace import ER_ACE
 from .lwf import LwFPlugin
 from .agem import AGEMPlugin
-from .skill_memory import SkillMemoryStrategy
+from skill_memory import SkillMemoryStrategy
 
 __all__ = [
     "OnlineICaRL",
