@@ -225,7 +225,7 @@ def create_strategy(
                         * DS_SIZES[dataset_name][1]
                         * DS_SIZES[dataset_name][2]
                     ),
-                    hidden_size=2048,
+                    hidden_size=4096,
                     hidden_layers=1,
                     drop_rate=0.01,
                 ),
