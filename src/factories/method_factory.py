@@ -12,7 +12,7 @@ import avalanche.logging as logging
 import src.toolkit.utils as utils
 from avalanche.evaluation.metrics import (StreamTime, accuracy_metrics,
                                           loss_metrics)
-from avalanche.models import SCRModel, SimpleMLP
+from avalanche.models import SCRModel, SimpleMLP, SimpleCNN
 from avalanche.training.plugins import (EarlyStoppingPlugin, MIRPlugin,
                                         RARPlugin, ReplayPlugin,
                                         SupervisedPlugin)
@@ -218,16 +218,19 @@ def create_strategy(
                 "eval_learning_rate": float(
                     strategy_kwargs.get("eval_learning_rate", 0.01)
                 ),
-                "evaluator_model_factory": lambda: SimpleMLP(
+                # "evaluator_model_factory": lambda: SimpleMLP(
+                #     num_classes=DS_CLASSES[dataset_name],
+                #     input_size=(
+                #         DS_SIZES[dataset_name][0]
+                #         * DS_SIZES[dataset_name][1]
+                #         * DS_SIZES[dataset_name][2]
+                #     ),
+                #     hidden_size=2048,
+                #     hidden_layers=1,
+                #     drop_rate=0.01,
+                # ),
+                "evaluator_model_factory": lambda: SimpleCNN(
                     num_classes=DS_CLASSES[dataset_name],
-                    input_size=(
-                        DS_SIZES[dataset_name][0]
-                        * DS_SIZES[dataset_name][1]
-                        * DS_SIZES[dataset_name][2]
-                    ),
-                    hidden_size=2048,
-                    hidden_layers=1,
-                    drop_rate=0.01,
                 ),
             }
         )
