@@ -227,7 +227,7 @@ def create_strategy(
                     ),
                     hidden_size=2048,
                     hidden_layers=1,
-                    drop_rate=0.1,
+                    drop_rate=0.01,
                 ),
             }
         )

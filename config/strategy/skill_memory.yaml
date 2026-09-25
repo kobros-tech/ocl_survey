@@ -20,4 +20,4 @@ eval_routing: none
 train_epochs: 1
 class_train_epochs: 1
 eval_epochs: 3
-eval_memory_per_class: 100
+eval_memory_per_class: 200
