@@ -21,3 +21,4 @@ train_epochs: 1
 class_train_epochs: 1
 eval_epochs: 10
 eval_memory_per_class: 100
+eval_learning_rate: 0.05
