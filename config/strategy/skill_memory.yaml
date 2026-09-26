@@ -19,6 +19,7 @@ score_floor: 0.90
 eval_routing: none
 train_epochs: 1
 class_train_epochs: 1
-eval_epochs: 10
-eval_memory_per_class: 100
-eval_learning_rate: 0.01
+eval_epochs: 3
+eval_batch_size: 10
+eval_memory_per_class: 20
+eval_learning_rate: 0.0598728574654861

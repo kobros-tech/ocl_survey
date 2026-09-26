@@ -33,6 +33,7 @@ from src.toolkit.parallel_eval import ParallelEvaluationPlugin
 from src.toolkit.probing import ProbingPlugin
 from src.toolkit.review_trick import ReviewTrickPlugin
 from src.toolkit.sklearn_probing import SKLearnProbingPlugin
+from src.toolkit.slim_resnet18 import SlimResNet18
 
 
 """Method Factory"""
@@ -218,16 +219,9 @@ def create_strategy(
                 "eval_learning_rate": float(
                     strategy_kwargs.get("eval_learning_rate", 0.01)
                 ),
-                "evaluator_model_factory": lambda: SimpleMLP(
-                    num_classes=DS_CLASSES[dataset_name],
-                    input_size=(
-                        DS_SIZES[dataset_name][0]
-                        * DS_SIZES[dataset_name][1]
-                        * DS_SIZES[dataset_name][2]
-                    ),
-                    hidden_size=2048,
-                    hidden_layers=1,
-                    drop_rate=0.01,
+                "evaluator_model_factory": lambda: SlimResNet18(
+                    nclasses=DS_CLASSES[dataset_name],
+                    input_size=DS_SIZES[dataset_name],
                 ),
             }
         )
