@@ -4,4 +4,4 @@ jsonlines==4.0.0
 kornia==0.7.0
 ray[default]==2.8.1
 hyperopt
-skill-memory @ git+https://github.com/kobros-tech/skill-memory.git@3bde8c79926a5e5fbf8b9d888f90bece82ddc038
+skill-memory @ git+https://github.com/kobros-tech/skill-memory.git@b930fe397f491ca3f1bfe14d27e64ad29eb9c703

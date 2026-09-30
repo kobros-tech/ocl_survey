@@ -192,23 +192,43 @@ def create_strategy(
                     "force_decision", None
                 ),
 
-                # Direct Skill Memory evaluation is disabled.
+                # Skill Memory CL evaluation routing.
+                # Keep this "none" when using the independent CL
+                # evaluator so it does not depend on evaluator routing.
                 "eval_routing": strategy_kwargs.get(
                     "eval_routing", "none"
                 ),
 
-                # Independent ML evaluator.
+                # Select the independent evaluator:
+                #   ml = standalone learned evaluator
+                #   cl = Skill Memory's binary YES/NO verifiers
+                "eval_method": strategy_kwargs.get(
+                    "eval_method", "ml"
+                ),
+
+                # Common samples/class budget for ML and CL.
                 "eval_memory_per_class": int(
                     strategy_kwargs.get("eval_memory_per_class", 20)
                 ),
                 "eval_memory_seed": int(
                     strategy_kwargs.get("eval_memory_seed", 0)
                 ),
+
+                # Skill Memory CL training.
                 "train_epochs": int(
                     strategy_kwargs.get("train_epochs", 1)
                 ),
+                "class_train_mode": strategy_kwargs.get(
+                    "class_train_mode", "multiclass"
+                ),
+                "validation_fraction": float(
+                    strategy_kwargs.get("validation_fraction", 0.2)
+                ),
+
+                # ML evaluator settings. These are ignored when
+                # eval_method="cl", but remain available for the ML baseline.
                 "eval_epochs": int(
-                    strategy_kwargs.get("eval_epochs", 10)
+                    strategy_kwargs.get("eval_epochs", 1)
                 ),
                 "eval_batch_size": int(
                     strategy_kwargs.get("eval_batch_size", 64)
@@ -223,9 +243,8 @@ def create_strategy(
             }
         )
 
-        # Keep OCL Survey's normal evaluator and loggers for experiment
-        # reporting. The independent ML evaluator inside SkillMemoryStrategy
-        # remains responsible for producing the predictions that are measured.
+        # OCL Survey's evaluator/loggers remain attached so that the
+        # experiment infrastructure records the selected evaluator output.
         evaluator, parallel_eval_plugin = create_evaluator(
             logdir=logdir,
             **evaluation_kwargs,
