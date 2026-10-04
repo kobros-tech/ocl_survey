@@ -33,6 +33,7 @@ from src.toolkit.parallel_eval import ParallelEvaluationPlugin
 from src.toolkit.probing import ProbingPlugin
 from src.toolkit.review_trick import ReviewTrickPlugin
 from src.toolkit.sklearn_probing import SKLearnProbingPlugin
+from src.toolkit.slim_resnet18 import SlimResNet18
 
 
 """Method Factory"""
@@ -157,9 +158,14 @@ def create_strategy(
         strategy = SkillMemoryStrategy
 
         strategy_dict["criterion"] = nn.CrossEntropyLoss()
+        model = SlimResNet18(
+            nclasses=DS_CLASSES[dataset_name],
+            input_size=DS_SIZES[dataset_name],
+        )
 
         strategy_dict.update(
             {
+                "model": model,
                 "max_skills": int(
                     strategy_kwargs.get("max_skills", 200)
                 ),
@@ -181,8 +187,8 @@ def create_strategy(
                 "max_safety_candidates": int(
                     strategy_kwargs.get("max_safety_candidates", 5)
                 ),
-                "class_train_epochs": int(
-                    strategy_kwargs.get("class_train_epochs", 1)
+                "train_epochs": int(
+                    strategy_kwargs.get("train_epochs", 1)
                 ),
                 "class_train_batch_size": int(
                     strategy_kwargs.get("class_train_batch_size", 64)
@@ -195,7 +201,7 @@ def create_strategy(
                 ),
 
                 # Direct Skill Memory evaluation is disabled.
-                "skill_eval_routing": strategy_kwargs.get(
+                "eval_routing": strategy_kwargs.get(
                     "eval_routing", "none"
                 ),
 
@@ -218,16 +224,9 @@ def create_strategy(
                 "eval_learning_rate": float(
                     strategy_kwargs.get("eval_learning_rate", 0.01)
                 ),
-                "evaluator_model_factory": lambda: SimpleMLP(
-                    num_classes=DS_CLASSES[dataset_name],
-                    input_size=(
-                        DS_SIZES[dataset_name][0]
-                        * DS_SIZES[dataset_name][1]
-                        * DS_SIZES[dataset_name][2]
-                    ),
-                    hidden_size=2048,
-                    hidden_layers=1,
-                    drop_rate=0.01,
+                "evaluator_model_factory": lambda: SlimResNet18(
+                    nclasses=DS_CLASSES[dataset_name],
+                    input_size=DS_SIZES[dataset_name],
                 ),
             }
         )
