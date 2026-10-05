@@ -187,8 +187,8 @@ def create_strategy(
                 "max_safety_candidates": int(
                     strategy_kwargs.get("max_safety_candidates", 5)
                 ),
-                "train_epochs": int(
-                    strategy_kwargs.get("train_epochs", 1)
+                "class_train_epochs": int(
+                    strategy_kwargs.get("class_train_epochs", 1)
                 ),
                 "class_train_batch_size": int(
                     strategy_kwargs.get("class_train_batch_size", 64)
@@ -201,7 +201,7 @@ def create_strategy(
                 ),
 
                 # Direct Skill Memory evaluation is disabled.
-                "eval_routing": strategy_kwargs.get(
+                "skill_eval_routing": strategy_kwargs.get(
                     "eval_routing", "none"
                 ),
 
